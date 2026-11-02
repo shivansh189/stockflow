@@ -1,10 +1,12 @@
 /* StockFlow service worker — network-first with offline cache fallback. */
-const CACHE = 'stockflow-v4';
+const CACHE = 'stockflow-v6';
 const ASSETS = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './cloud.js',
+  './config.js',
   './manifest.json',
   './icon-192.png',
   './icon-512.png',

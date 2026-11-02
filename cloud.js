@@ -1,12 +1,13 @@
-/* StockFlow — Cloud Sync bridge (Supabase)
+/* StockFlow — Cloud Sync / Account (Supabase)
  *
- * One row per shop in the `stockflow_state` table holds the entire shop state
- * as JSON. Devices auto-pull on load, auto-push shortly after every save, and
- * receive real-time updates while open (if Realtime is enabled for the table).
+ * Simple flow: user signs in with their email (e.g. Gmail) using a one-time
+ * code. Everything they save auto-pushed to their own cloud row — data stays
+ * private per account (Row Level Security scopes it by auth.uid()).
  *
- * Config is stored in localStorage under key `stockflow_cloud_cfg_v1`
- * (url, key, shopCode). Anything here never contains secrets — the anon key
- * is public by design; a unique shop code keeps shops separated.
+ *   sign in with email  ->  client.auth.signInWithOtp({ email })
+ *   verify 6-digit code ->  client.auth.verifyOtp({ email, token, type: 'email' })
+ *   session persists in localStorage; every save queues a push; devices get
+ *   real-time updates via postgres_changes (RLS-scoped).
  */
 'use strict';
 
@@ -15,66 +16,78 @@
   const TABLE = 'stockflow_state';
 
   let client = null;
-  let cfg = null;
   let channel = null;
   let lastPushStamp = 0;
 
   function loadCfg() {
-    if (!cfg) {
-      try {
-        const raw = localStorage.getItem(CFG_KEY);
-        cfg = raw ? JSON.parse(raw) : null;
-      } catch (e) { cfg = null; }
-    }
-    if (cfg && cfg.disabled) { client = null; return cfg; }
-    if (!cfg && window.STOCKFLOW_CLOUD_DEFAULT && window.STOCKFLOW_CLOUD_DEFAULT.url) {
-      cfg = window.STOCKFLOW_CLOUD_DEFAULT;
-    }
-    if (cfg && cfg.url && cfg.key && window.supabase) {
-      client = window.supabase.createClient(cfg.url, cfg.key);
-    } else { client = null; }
-    return cfg;
-  }
-
-  function saveCfg(next) {
-    cfg = next;
-    try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch (e) {}
-    if (cfg && cfg.url && cfg.key && window.supabase) {
-      client = window.supabase.createClient(cfg.url, cfg.key);
-    }
-  }
-
-  function reset() {
-    unsubscribe();
-    client = null;
-    saveCfg({ disabled: true });
-  }
-
-  function connected() {
-    return !!(client && cfg && cfg.url && cfg.key && cfg.shopCode);
-  }
-
-  /* Quick check that the table exists and is reachable. */
-  async function checkConnection() {
-    if (!connected()) return { ok: false, reason: 'not-configured' };
+    if (client) return client; // already built
+    const raw = (window.STOCKFLOW_CLOUD_DEFAULT && window.STOCKFLOW_CLOUD_DEFAULT.url) ? window.STOCKFLOW_CLOUD_DEFAULT : null;
     try {
-      const { error } = await client.from(TABLE).select('updated_at').limit(1);
-      if (error) return { ok: false, error: error.message };
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: e.message };
+      const saved = JSON.parse(localStorage.getItem(CFG_KEY) || 'null');
+      if (window.supabase && saved && saved.url && saved.key) {
+        client = window.supabase.createClient(saved.url, saved.key);
+        return client;
+      }
+    } catch (e) { /* fall through to defaults */ }
+    if (window.supabase && raw && raw.url && raw.key) {
+      client = window.supabase.createClient(raw.url, raw.key);
     }
+    return client;
   }
 
-  /* Fetch the latest cloud state for this shop. Returns:
-   *  { data, updatedAt } | { empty: true } | { error } | null (not connected) */
+  function isAvailable() { return !!loadCfg(); }
+
+  /* -------- auth -------- */
+
+  async function sendLoginCode(email) {
+    if (!isAvailable()) return { error: 'cloud not configured' };
+    try {
+      const { error } = await client.auth.signInWithOtp({ email: email.trim().toLowerCase(), shouldCreateUser: true });
+      return error ? { error: error.message } : { ok: true };
+    } catch (e) { return { error: e.message }; }
+  }
+
+  async function verifyLoginCode(email, token) {
+    if (!isAvailable()) return { error: 'cloud not configured' };
+    try {
+      const { error } = await client.auth.verifyOtp({ email: email.trim().toLowerCase(), token: token.trim(), type: 'email' });
+      return error ? { error: error.message } : { ok: true };
+    } catch (e) { return { error: e.message }; }
+  }
+
+  async function signOut() {
+    if (!isAvailable()) return;
+    unsubscribe();
+    try { await client.auth.signOut(); } catch (e) {}
+    lastPushStamp = 0;
+  }
+
+  async function getSession() {
+    if (!isAvailable()) return null;
+    try {
+      const { data } = await client.auth.getSession();
+      return data && data.session ? data.session : null;
+    } catch (e) { return null; }
+  }
+
+  function onAuth(cb) {
+    if (!isAvailable()) return function () {};
+    const { data } = client.auth.onAuthStateChange(function () { cb(); });
+    return function () { data.subscription.unsubscribe(); };
+  }
+
+  /* -------- row sync (per user) -------- */
+
+  /* Fetch the account's cloud state:
+   *  { data, updatedAt } | { empty: true } | { error } | { signedOut: true } */
   async function pullLatest() {
-    if (!connected()) return null;
+    const s = await getSession();
+    if (!s) return { signedOut: true, isAvailable: isAvailable() };
     try {
       const { data, error } = await client
         .from(TABLE)
         .select('data, updated_at')
-        .eq('shop_code', cfg.shopCode)
+        .eq('user_id', s.user.id)
         .maybeSingle();
       if (error) return { error: error.message };
       if (!data) return { empty: true };
@@ -84,41 +97,44 @@
     }
   }
 
-  /* Push the given full state object to the cloud row for this shop. */
+  /* Push the given state to the signed-in account's cloud row. */
   async function pushState(stateObj) {
-    if (!connected()) return null;
+    const s = await getSession();
+    if (!s) return null;
     const now = new Date().toISOString();
     try {
       const payload = JSON.parse(JSON.stringify(stateObj || {}));
       const { error } = await client
         .from(TABLE)
-        .upsert({ shop_code: cfg.shopCode, data: payload, updated_at: now }, { onConflict: 'shop_code' });
+        .upsert({ user_id: s.user.id, data: payload, updated_at: now }, { onConflict: 'user_id' });
       if (error) return { error: error.message };
       lastPushStamp = now;
       return { ok: true, updatedAt: now };
-    } catch (e) {
-      return { error: e.message };
-    }
+    } catch (e) { return { error: e.message }; }
   }
 
-  /* Real-time updates: fires cb(nextUpdatedSt, data) when another device changes the row. */
-  function subscribe(onRemoteChange) {
-    if (!connected() || !client) return null;
-    try {
-      channel = client
-        .channel('stockflow-' + cfg.shopCode)
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: TABLE, filter: 'shop_code=eq.' + cfg.shopCode },
-          function (payload) {
-            const newTs = payload && payload.new ? payload.new.updated_at : null;
-            if (newTs && newTs <= lastPushStamp) return; // echo of our own push
-            onRemoteChange(newTs, payload && payload.new ? payload.new.data : undefined);
-          }
-        )
-        .subscribe();
-      return channel;
-    } catch (e) { return null; }
+  /* Real-time events when another device pushes (RLS keeps it private). */
+  function subscribe(onRemoteChange, onSignedOutChange) {
+    if (!isAvailable() || !client) return null;
+    unsubscribe();
+    getSession().then(function (s) {
+      if (!s) return;
+      try {
+        channel = client
+          .channel('stockflow-user-' + s.user.id)
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: TABLE, filter: 'user_id=eq.' + s.user.id },
+            function (payload) {
+              const newTs = payload && payload.new ? payload.new.updated_at : null;
+              if (newTs && newTs <= lastPushStamp) return;
+              onRemoteChange(newTs, payload && payload.new ? payload.new.data : undefined);
+            }
+          )
+          .subscribe();
+      } catch (e) { /* realtime best-effort */ }
+    });
+    return channel;
   }
 
   function unsubscribe() {
@@ -128,37 +144,19 @@
     channel = null;
   }
 
-  function getClient() { return client; }
-  function getCfg() { return cfg; }
-
-  /* The one-time SQL the user runs in the Supabase SQL editor once per project. */
-  const SETUP_SQL = [
-    'create table if not exists stockflow_state (',
-    '  shop_code text primary key,',
-    '  data jsonb not null default \'{}\'::jsonb,',
-    '  updated_at timestamptz not null default now()',
-    ');',
-    '',
-    'alter table stockflow_state enable row level security;',
-    'drop policy if exists "stockflow allow all" on stockflow_state;',
-    'create policy "stockflow allow all" on stockflow_state for all using (true) with check (true);',
-    '',
-    '-- Realtime sync (ignore the error if it says the table is already in the publication):',
-    'alter publication supabase_realtime add table stockflow_state;',
-  ].join('\n');
-
   window.CloudSync = {
     loadCfg,
-    saveCfg,
-    reset,
-    connected,
-    checkConnection,
+    isAvailable,
+    sendLoginCode,
+    verifyLoginCode,
+    signOut,
+    getSession,
+    onAuth,
     pullLatest,
     pushState,
     subscribe,
     unsubscribe,
-    getClient,
-    getCfg,
-    SETUP_SQL,
+    getCfg: function () { const d = window.STOCKFLOW_CLOUD_DEFAULT || {}; return { url: d.url || '' }; },
+    REALTIME_TABLE: TABLE,
   };
 })();

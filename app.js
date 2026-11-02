@@ -8,6 +8,9 @@ const state = { products: [], serials: [], transactions: [], invoices: [], parti
 let currentPage = 'dashboard';
 let cloudLastSync = null;
 let cloudPushTimer = null;
+let cloudSessionEmail = null;
+let cloudAuthEmail = '';
+let cloudAuthStage = 'email';
 const bill = { file: null, progress: 0, busy: false, parsed: null };
 
 const tesseractLib = window.Tesseract || null;
@@ -27,7 +30,7 @@ const PAGE_TITLES = {
   serials: ['Serial Numbers', 'Track individual serial numbers'],
   parties: ['Parties', 'Customers, suppliers and payments (khata)'],
   transactions: ['Transactions', 'Full history of stock movements'],
-  sync: ['☁️ Sync / Cloud', 'Share one inventory between PC and phone (free Supabase)'],
+  sync: ['☁️ Cloud Save', 'Log in with your email — data saves to your account automatically'],
 };
 
 /* ---------------- utils ---------------- */
@@ -76,7 +79,7 @@ function loadState() {
 }
 function saveState() {
   try { localStorage.setItem(DB_KEY, JSON.stringify(state)); } catch (e) {}
-  if (window.CloudSync && CloudSync.connected()) {
+  if (window.CloudSync && cloudSessionEmail) {
     if (cloudPushTimer) clearTimeout(cloudPushTimer);
     cloudPushTimer = setTimeout(function () { cloudPushTimer = null; doCloudPush(true); }, 1200);
   }
@@ -947,22 +950,12 @@ function handleAction(e) {
     case 'invoice-add-line': addInvoiceLine(); return;
     case 'invoice-line-remove': { const rows = document.querySelectorAll('#invoice-lines .invoice-line-row'); const row = el.closest('.invoice-line-row'); if (row) { const idx = parseInt(row.dataset.line); if (!isNaN(idx)) invoiceLines.splice(idx, 1); if (invoiceLines.length === 0) invoiceLines.push({ productId: '', qty: 1, unitPrice: 0, gstRate: 18, discount: 0 }); renderInvoiceLines(); } return; }
     case 'purchase-add-line': purchaseLines.push({ productId: '', qty: 1, unitCost: 0 }); renderPurchaseLines(); computePurchaseTotals(); return;
-    case 'cloud-gencode': { const inp = document.getElementById('cl-code'); if (inp) inp.value = genShopCode(); return; }
-    case 'cloud-copy-sql': {
-      try { navigator.clipboard.writeText(CloudSync.SETUP_SQL).then(function () { toast('📋 SQL copied — paste it in the Supabase SQL editor'); }, function () { toast('Copy failed — select the SQL text manually', 'error'); }); }
-      catch (e) { toast('Copy failed — select the SQL text manually', 'error'); }
-      return;
-    }
-    case 'cloud-push': {
-      confirmDialog('Push this device\'s data to the cloud? Data pushed from other devices since the last sync will be replaced by this device.', function () { doCloudPush(true); renderSync(); });
-      return;
-    }
-    case 'cloud-pull': {
-      confirmDialog('Replace this device with the cloud copy? Unsynced changes on this device will be kept as a backup in local storage.', function () { doCloudPull(); renderSync(); });
-      return;
-    }
-    case 'cloud-disconnect': {
-      confirmDialog('Disconnect cloud sync on this device? Local data stays, cloud keeps its copy.', function () { CloudSync.reset(); renderSync(); updateCloudBadge({ ok: false, reason: 'not-configured' }); toast('☁️ Cloud disconnected (local data kept)'); });
+    case 'cloud-sync-now': doCloudPull().then(function () { renderSync(); }); return;
+    case 'cloud-edit-email': cloudAuthStage = 'email'; renderSync(); return;
+    case 'cloud-signout': {
+      confirmDialog('Log out of cloud sync on this device? This device will stop syncing until you log in again (local data stays).', function () {
+        CloudSync.signOut().then(function () { cloudSessionEmail = null; renderSync(); updateCloudBadge({ ok: false, reason: 'signed-out' }); toast('🚪 Logged out (local data kept)'); });
+      });
       return;
     }
     case 'purchase-line-remove': { const row = el.closest('.purchase-line-row'); if (row) { const idx = parseInt(row.dataset.line); if (!isNaN(idx)) purchaseLines.splice(idx, 1); if (purchaseLines.length === 0) purchaseLines.push({ productId: '', qty: 1, unitCost: 0 }); renderPurchaseLines(); computePurchaseTotals(); } return; }
@@ -989,7 +982,8 @@ function handleSubmit(e) {
   if (form.id === 'product-form') { e.preventDefault(); handleProductSave(e); return; }
   if (form.id === 'invoice-form') { e.preventDefault(); handleInvoiceSave(e); return; }
   if (form.id === 'purchase-form') { e.preventDefault(); handlePurchaseSave(e); return; }
-  if (form.id === 'cloud-form') { e.preventDefault(); handleCloudSave(e); return; }
+  if (form.id === 'cloud-email-form') { e.preventDefault(); handleCloudEmailSubmit(e); return; }
+  if (form.id === 'cloud-code-form') { e.preventDefault(); handleCloudCodeSubmit(e); return; }
   if (form.id === 'payment-form') { e.preventDefault(); handlePaymentSave(e); return; }
   if (form.id === 'manual-add-form') { e.preventDefault(); handleManualAdd(e); return; }
   if (form.id === 'deduct-form') { e.preventDefault(); handleDeduct(e); return; }
@@ -1047,8 +1041,9 @@ function updateCloudBadge(chk) {
     el.textContent = '☁ Synced · ' + new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     el.className = 'cloud-badge cloud-ok';
   } else {
-    el.textContent = chk.reason === 'not-configured' ? '☁ Cloud off' : '☁ Sync error';
-    el.className = chk.reason === 'not-configured' ? 'cloud-badge cloud-off' : 'cloud-badge cloud-err';
+    const off = chk.reason === 'signed-out' || !cloudSessionEmail;
+    el.textContent = off ? '☁ Sign in for cloud save' : '☁ Sync error';
+    el.className = off ? 'cloud-badge cloud-off' : 'cloud-badge cloud-err';
   }
 }
 
@@ -1060,28 +1055,28 @@ function setCloudBadgeCls(mode) {
     el.textContent = '☁ Synced · ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     el.className = 'cloud-badge cloud-ok';
   } else if (mode === 'error') {
-    el.textContent = '☁ Sync failed';
+    el.textContent = '☁ Sync paused — retrying on next change';
     el.className = 'cloud-badge cloud-err';
   }
 }
 
 async function doCloudPush(silent) {
-  if (!(window.CloudSync && CloudSync.connected())) return null;
+  if (!(window.CloudSync && cloudSessionEmail)) return null;
   const res = await CloudSync.pushState(state);
   if (res && !res.error) {
     cloudLastSync = res.updatedAt;
     try { localStorage.setItem('stockflow_cloud_lastpush', res.updatedAt); } catch (err) {}
-    if (!silent) toast('☁️ Pushed to cloud');
+    if (!silent) toast('☁️ Saved to your account');
     setCloudBadgeCls('ok');
   } else if (res && res.error) {
-    if (!silent) toast('Cloud push failed: ' + res.error, 'error');
+    if (!silent) toast('Cloud save failed: ' + res.error, 'error');
     setCloudBadgeCls('error');
   }
   return res;
 }
 
 async function doCloudPull(silent) {
-  if (!(window.CloudSync && CloudSync.connected())) return null;
+  if (!(window.CloudSync && cloudSessionEmail)) return null;
   const res = await CloudSync.pullLatest();
   if (res && res.data) {
     try {
@@ -1092,10 +1087,10 @@ async function doCloudPull(silent) {
     loadState();
     render();
     cloudLastSync = res.updatedAt || new Date().toISOString();
-    if (!silent) toast('☁️ Loaded latest from cloud');
+    if (!silent) toast('☁️ Loaded latest from your account');
     setCloudBadgeCls('ok');
   } else if (res && res.empty && !silent) {
-    toast('Cloud has no data for this shop yet');
+    toast('Your account has no saved data yet');
   } else if (res && res.error) {
     if (!silent) toast('Cloud pull failed: ' + res.error, 'error');
     setCloudBadgeCls('error');
@@ -1118,129 +1113,133 @@ function onCloudUpdate(ts, data) {
 }
 
 /* ---------------- sync page ---------------- */
+
 function renderSync() {
-  const cfg = (window.CloudSync && CloudSync.getCfg()) || null;
-  const isConnected = !!(window.CloudSync && CloudSync.connected());
   let html = '';
 
-  if (isConnected) {
+  if (cloudSessionEmail) {
     let last = cloudLastSync;
     if (!last) { try { last = localStorage.getItem('stockflow_cloud_lastpush'); } catch (e) {} }
-    const when = last ? new Date(last).toLocaleString() : '—';
-    html += `<div class="card" style="max-width:720px">
-      <h3>☁️ Cloud Sync — Connected</h3>
-      <table class="kv">
-        <tr><td>Project</td><td class="mono">${esc(cfg.url)}</td></tr>
-        <tr><td>Shop code</td><td class="mono strong">${esc(cfg.shopCode)}</td></tr>
-        <tr><td>Last sync</td><td>${esc(when)}</td></tr>
-      </table>
-      <p class="muted">Every change is pushed automatically, and open devices update in real time. Cloud data replaces local data when the app opens.</p>
-      <div class="row-actions" style="margin-top:10px">
-        <button class="btn btn-primary" data-action="cloud-push">⬆️ Push this device to cloud</button>
-        <button class="btn" data-action="cloud-pull">⬇️ Pull cloud to this device</button>
-        <button class="btn" data-action="cloud-disconnect">✖ Disconnect</button>
+    const when = last ? new Date(last).toLocaleString() : 'just now';
+    html += `<div class="card" style="max-width:640px">
+      <h3>☁️ Auto-saved to your account</h3>
+      <p>Signed in as <strong class="mono">${esc(cloudSessionEmail)}</strong></p>
+      <p class="muted">Everything you change — stock, bills, invoices, purchases, payments — is saved to this account automatically. Open StockFlow on any other device, sign in with the same email, and everything appears (live, in seconds).</p>
+      <div class="row-actions" style="margin-top:12px">
+        <button class="btn btn-primary" data-action="cloud-sync-now">🔄 Sync now</button>
+        <button class="btn" data-action="cloud-signout">🚪 Log out on this device</button>
       </div>
-      <div id="cloud-check" class="muted" style="margin-top:10px"></div>
+      <p class="muted" style="margin-top:10px;font-size:13px">Last activity: ${esc(when)}</p>
+    </div>`;
+  } else if (cloudAuthStage === 'email') {
+    html += `<div class="card" style="max-width:520px">
+      <h3>🔑 Save & sync with your email</h3>
+      <p class="muted">Your shop data is saved under your own email account. Each device signs in once — then everything syncs automatically.</p>
+      <form id="cloud-email-form" autocomplete="email">
+        <div class="field">
+          <label>Your email (Gmail works great)</label>
+          <input id="cl-email" type="email" placeholder="you@gmail.com" required style="font-size:16px;padding:10px">
+        </div>
+        <button type="submit" class="btn btn-primary">📧 Send me a login code</button>
+      </form>
+      <div id="cloud-auth-status" class="muted" style="margin-top:10px"></div>
     </div>`;
   } else {
-    html += `<div class="card" style="max-width:720px">
-      <h3>☁️ Connect your shop cloud (~3 min, free)</h3>
-      <ol class="steps">
-        <li>Open <span class="mono">supabase.com</span> → sign up / log in (free).</li>
-        <li><strong>New project</strong> → name it e.g. <span class="mono">stockflow</span> → set a database password → Create.</li>
-        <li>Copy <strong>Project URL</strong> and <strong>anon public key</strong> (Settings → API) into the fields below.</li>
-        <li>Your devices then share one inventory in real time.</li>
-      </ol>
-      <form id="cloud-form" autocomplete="off">
-        <div class="form-grid">
-          <div class="field span-2"><label>Project URL * <span class="muted">(https://xxxx.supabase.co)</span></label><input id="cl-url" type="text" placeholder="https://xxxxx.supabase.co" value="${cfg ? esc(cfg.url || '') : ''}"></div>
-          <div class="field span-2"><label>anon public key *</label><input id="cl-key" type="text" placeholder="eyJhbGciOi..." value="${cfg ? esc(cfg.key || '') : ''}"></div>
-          <div class="field"><label>Shop code *</label><input id="cl-code" type="text" placeholder="SF-7K2M" value="${cfg ? esc(cfg.shopCode || '') : ''}"></div>
+    html += `<div class="card" style="max-width:520px">
+      <h3>✉️ Check your email</h3>
+      <p class="muted">We sent a 6-digit login code to <strong class="mono">${esc(cloudAuthEmail)}</strong>. Enter it below (also check spam).</p>
+      <form id="cloud-code-form" autocomplete="one-time-code">
+        <div class="field">
+          <label>6-digit code</label>
+          <input id="cl-code" type="text" inputmode="numeric" maxlength="10" placeholder="123456" required style="font-size:18px;letter-spacing:4px;padding:10px;text-align:center">
         </div>
-        <div class="row-actions">
-          <button type="button" class="btn btn-sm" data-action="cloud-gencode">🎲 Generate shop code</button>
-          <button type="submit" class="btn btn-primary">✅ Save & Test connection</button>
-        </div>
+        <button type="submit" class="btn btn-primary">✅ Verify & sign in</button>
+        <button type="button" class="btn" data-action="cloud-edit-email">✏️ Change email</button>
       </form>
-      <div id="cloud-check" class="muted" style="margin-top:10px"></div>
+      <div id="cloud-auth-status" class="muted" style="margin-top:10px"></div>
     </div>`;
   }
-
-  html += `<div class="card" style="max-width:720px;margin-top:16px">
-    <h3>🛠 One-time SQL setup</h3>
-    <p class="muted">Run this once in <strong>Supabase → SQL Editor → New query</strong>, then press Run. It creates the sync table and opens it for your shop.</p>
-    <pre class="ocr-text" id="cloud-sql">${esc(window.CloudSync ? CloudSync.SETUP_SQL : '')}</pre>
-    <button class="btn btn-sm" data-action="cloud-copy-sql">📋 Copy SQL</button>
-  </div>`;
 
   document.getElementById('page').innerHTML = html;
   setTopbarActions('');
-  if (window.CloudSync && CloudSync.connected()) {
-    CloudSync.checkConnection().then(function (chk) {
-      const el = document.getElementById('cloud-check');
-      if (el) { el.textContent = chk.ok ? '✅ Connection verified.' : '⚠️ ' + (chk.error || 'Connection failed — are the URL/key correct and the setup SQL run?'); }
-    });
-  }
   return html;
 }
 
-function genShopCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let s = '';
-  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
-  return 'SF-' + s.slice(0, 3) + '-' + s.slice(3);
+async function handleCloudEmailSubmit(e) {
+  e.preventDefault();
+  const email = document.getElementById('cl-email').value.trim();
+  if (!email || email.indexOf('@') < 1) { toast('Enter a valid email', 'error'); return; }
+  const status = document.getElementById('cloud-auth-status');
+  status.textContent = 'Sending code…';
+  const res = await CloudSync.sendLoginCode(email);
+  if (res && res.error) {
+    status.textContent = '❌ ' + res.error;
+    return;
+  }
+  cloudAuthEmail = email;
+  cloudAuthStage = 'code';
+  renderSync();
+  toast('📧 Code sent to ' + email + ' — check your inbox');
 }
 
-async function handleCloudSave(e) {
+async function handleCloudCodeSubmit(e) {
   e.preventDefault();
-  const url = document.getElementById('cl-url').value.trim().replace(/\/+$/, '');
-  const key = document.getElementById('cl-key').value.trim();
-  const shopCode = document.getElementById('cl-code').value.trim().toUpperCase();
-  if (!url || !key || !shopCode) { toast('Fill URL, key and shop code', 'error'); return; }
-  CloudSync.saveCfg({ url, key, shopCode });
-  toast('Config saved — testing connection…');
-  const res = await CloudSync.pullLatest();
+  const token = document.getElementById('cl-code').value.trim();
+  if (!token) { toast('Enter the 6-digit code from your email', 'error'); return; }
+  const status = document.getElementById('cloud-auth-status');
+  status.textContent = 'Verifying…';
+  const res = await CloudSync.verifyLoginCode(cloudAuthEmail, token);
   if (res && res.error) {
-    toast('Config saved, but table missing — run the SQL below, then use Push.', 'error');
-  } else if (res && res.empty) {
-    await doCloudPush(true);
-    toast('☁️ Connected! Initial shop data uploaded.');
-  } else {
-    await doCloudPull(true);
-    toast('☁️ Connected! Cloud data loaded onto this device.');
+    status.textContent = '❌ ' + res.error;
+    return;
   }
+  cloudAuthStage = 'email';
+  await afterCloudLogin(false);
   renderSync();
-  updateCloudBadge({ ok: true });
+}
+
+function afterCloudLogin(silent) {
+  return CloudSync.getSession().then(function (s) {
+    if (!s || !s.user) { updateCloudBadge({ ok: false, reason: 'signed-out' }); return null; }
+    cloudSessionEmail = (s.user.email || 'signed in');
+    return CloudSync.pullLatest().then(function (res) {
+      if (res && res.data) {
+        try {
+          const localRaw = localStorage.getItem(DB_KEY);
+          if (localRaw) localStorage.setItem(DB_KEY + '_backup_lastcloud', localRaw);
+          localStorage.setItem(DB_KEY, JSON.stringify(res.data));
+        } catch (e) {}
+        loadState();
+        render();
+        cloudLastSync = res.updatedAt || new Date().toISOString();
+        if (!silent) toast('☁️ Signed in — your saved shop data loaded');
+      } else if (res && res.empty) {
+        return doCloudPush(true).then(function () {
+          if (!silent) toast("☁️ Signed in — this device's data now saved to your account");
+        });
+      }
+      return true;
+    }).then(function () {
+      updateCloudBadge({ ok: true });
+      CloudSync.subscribe(onCloudUpdate);
+      if (currentPage === 'sync') renderSync();
+    });
+  });
 }
 
 function bootApp() {
-  let pulled = false;
-  if (window.CloudSync) {
-    CloudSync.loadCfg();
-    if (CloudSync.connected()) {
-      CloudSync.pullLatest().then(function (res) {
-        if (res && res.data) {
-          try {
-            const localRaw = localStorage.getItem(DB_KEY);
-            if (localRaw) localStorage.setItem(DB_KEY + '_backup_lastcloud', localRaw);
-            localStorage.setItem(DB_KEY, JSON.stringify(res.data));
-          } catch (e) {}
-          loadState();
-          render();
-          cloudLastSync = res.updatedAt || new Date().toISOString();
-          updateCloudBadge({ ok: true });
-          toast('☁️ Loaded shop data from cloud');
-        } else if (res && res.empty) {
-          doCloudPush(true);
-          updateCloudBadge({ ok: true });
-        } else if (res && res.error) {
-          updateCloudBadge({ ok: false, reason: 'error' });
-          toast('Cloud not ready — open ☁️ Sync page and run the setup SQL', 'error');
-        }
-        CloudSync.subscribe(onCloudUpdate);
-      });
-    }
+  if (!(window.CloudSync && CloudSync.isAvailable())) {
+    updateCloudBadge({ ok: false, reason: 'signed-out' });
+    return;
   }
+  CloudSync.getSession().then(function (s) {
+    if (s && s.user) {
+      afterCloudLogin(true);
+    } else {
+      cloudSessionEmail = null;
+      updateCloudBadge({ ok: false, reason: 'signed-out' });
+    }
+  });
 }
 
 /* ---------------- init ---------------- */

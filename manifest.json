@@ -1,7 +1,7 @@
 {
   "name": "StockFlow — Inventory & Stock Management",
   "short_name": "StockFlow",
-  "description": "Inventory, GST billing, purchase entry, khata and reports for your shop.",
+  "description": "Inventory, GST billing, purchase entry, khata and reports for your shop. Your data auto-saves to your own email account.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
