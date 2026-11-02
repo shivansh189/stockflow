@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StockFlow — Inventory & Stock Management</title>
+  <meta name="description" content="StockFlow — inventory, GST billing, purchase entry, khata and reports for your shop. Works on phone and desktop.">
+  <meta name="theme-color" content="#4f46e5">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">📦 StockFlow</div>
+      <nav class="nav">
+        <button class="nav-item active" data-action="nav-dashboard">
+          <span class="nav-icon">📊</span><span>Dashboard</span>
+        </button>
+        <button class="nav-item" data-action="nav-stock">
+          <span class="nav-icon">📋</span><span>Stock</span>
+        </button>
+        <button class="nav-item" data-action="nav-add">
+          <span class="nav-icon">➕</span><span>Add Stock</span>
+        </button>
+        <button class="nav-item" data-action="nav-deduct">
+          <span class="nav-icon">➖</span><span>Deduct Stock</span>
+        </button>
+        <button class="nav-item" data-action="nav-purchases">
+          <span class="nav-icon">📥</span><span>Purchases</span>
+        </button>
+        <button class="nav-item" data-action="nav-billing">
+          <span class="nav-icon">🧾</span><span>Billing / GST Invoice</span>
+        </button>
+        <button class="nav-item" data-action="nav-serials">
+          <span class="nav-icon">🔢</span><span>Serial Numbers</span>
+        </button>
+        <button class="nav-item" data-action="nav-parties">
+          <span class="nav-icon">👥</span><span>Parties</span>
+        </button>
+        <button class="nav-item" data-action="nav-transactions">
+          <span class="nav-icon">🧾</span><span>Transactions</span>
+        </button>
+      </nav>
+      <div class="sidebar-footer">StockFlow · Inventory made simple</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="page-title">Dashboard</h1>
+          <p class="page-sub" id="page-sub">Overview of your inventory</p>
+        </div>
+        <div id="topbar-actions"></div>
+      </header>
+      <section id="page" class="page"></section>
+    </main>
+  </div>
+
+  <!-- Bill Analysis Modal -->
+  <div class="modal-overlay" id="modal-bill" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h2>📄 Bill Analysis</h2>
+        <button class="modal-close" id="bill-close" data-action="nav-cancel">✕</button>
+      </div>
+      <p class="muted" id="bill-status">Analyzing bill image…</p>
+      <div class="form-grid" id="bill-fields">
+        <div class="field span-2">
+          <label>Product Name</label>
+          <input id="bill-product-name" type="text" placeholder="e.g. Steel Rod 12mm">
+        </div>
+        <div class="field">
+          <label>Quantity</label>
+          <input id="bill-quantity" type="number" min="1" step="1" placeholder="0">
+        </div>
+        <div class="field">
+          <label>Unit Price (optional)</label>
+          <input id="bill-unit-price" type="number" min="0" step="0.01" placeholder="0.00">
+        </div>
+        <div class="field span-2">
+          <label>Existing Product (optional)</label>
+          <select id="bill-product-select">
+            <option value="">➕ Create a new product</option>
+            <option value="" disabled></option>
+          </select>
+        </div>
+      </div>
+      <div id="bill-progress-wrap" class="hidden">
+        <div class="progress"><div id="bill-progress-bar"></div></div>
+        <p class="muted" id="bill-progress-text">0%</p>
+      </div>
+      <pre id="bill-ocr-text" class="ocr-text"></pre>
+      <div class="modal-actions">
+        <button class="btn" id="bill-cancel" data-action="nav-cancel">Cancel</button>
+        <button class="btn btn-primary" id="bill-add" data-action="bill-add">➕ Add to Stock</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Product Add / Edit Modal -->
+  <div class="modal-overlay" id="modal-product" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="product-modal-title">Add Product</h2>
+        <button class="modal-close" id="product-close" data-action="nav-cancel">✕</button>
+      </div>
+      <form id="product-form">
+        <div class="field"><label>Product Name *</label><input id="pm-name" type="text" required></div>
+        <div class="form-grid">
+          <div class="field"><label>SKU</label><input id="pm-sku" type="text" placeholder="Auto-generate if empty"></div>
+          <div class="field"><label>Category</label><input id="pm-category" type="text" placeholder="e.g. Raw Material"></div>
+          <div class="field"><label>Unit Price</label><input id="pm-price" type="number" min="0" step="0.01"></div>
+          <div class="field"><label>Low Stock Threshold</label><input id="pm-threshold" type="number" min="0" step="1" value="5"></div>
+        </div>
+        <div class="field" id="pm-qty-wrap"><label>Opening Quantity</label><input id="pm-qty" type="number" min="0" step="1" value="0"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn" id="product-cancel" data-action="nav-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Product</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Invoice Modal -->
+  <div class="modal-overlay" id="modal-invoice" hidden>
+    <div class="modal" style="width:min(880px,94vw)">
+      <div class="modal-header">
+        <h2 id="invoice-modal-title">🧾 New GST Invoice</h2>
+        <button class="modal-close" id="invoice-close" data-action="nav-cancel">✕</button>
+      </div>
+      <form id="invoice-form">
+        <div class="form-grid">
+          <div class="field"><label>Invoice No.</label><input id="inv-no" type="text" value="INV-0001"></div>
+          <div class="field"><label>Date</label><input id="inv-date" type="date" value="2026-11-02"></div>
+          <div class="field"><label>Customer *</label><select id="inv-customer"></select></div>
+          <div class="field"><label>Status</label><select id="inv-status"><option value="unpaid">Unpaid</option><option value="paid">Paid</option><option value="cancelled">Cancelled</option></select></div>
+        </div>
+        <h3 class="section-title">Line Items</h3>
+        <div id="invoice-lines">
+          <div class="invoice-line invoice-line-row" data-line="0">
+            <select class="line-product"></select>
+            <input class="line-qty" type="number" min="1" step="1" value="1">
+            <input class="line-price" type="number" min="0" step="0.01" value="0">
+            <select class="line-gst"><option value="0">0%</option><option value="5">5%</option><option value="12">12%</option><option value="18" selected>18%</option><option value="28">28%</option></select>
+            <input class="line-discount" type="number" min="0" step="0.01" value="0">
+            <div class="line-amt">0.00</div>
+            <button type="button" class="btn btn-sm btn-danger line-remove" data-action="invoice-line-remove">✕</button>
+          </div>
+        </div>
+        <button type="button" class="btn btn-sm" data-action="invoice-add-line">+ Add Item</button>
+        <div class="form-grid" style="margin-top:12px">
+          <div class="field"><label>Subtotal</label><input id="inv-subtotal" type="text" value="0.00" readonly></div>
+          <div class="field"><label>GST</label><input id="inv-gst" type="text" value="0.00" readonly></div>
+          <div class="field"><label>Discount</label><input id="inv-discount" type="text" value="0.00" readonly></div>
+          <div class="field"><label>Total</label><input id="inv-total" type="text" value="0.00" readonly></div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn" id="invoice-cancel2" data-action="nav-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary">💾 Save Invoice & Deduct Stock</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Purchase Modal -->
+  <div class="modal-overlay" id="modal-purchase" hidden>
+    <div class="modal" style="width:min(760px,94vw)">
+      <div class="modal-header">
+        <h2 id="purchase-modal-title">📥 New Purchase Entry</h2>
+        <button class="modal-close" id="purchase-close" data-action="nav-cancel">✕</button>
+      </div>
+      <form id="purchase-form">
+        <div class="form-grid">
+          <div class="field"><label>Purchase / Bill No.</label><input id="pur-no" type="text" value="PUR-0001"></div>
+          <div class="field"><label>Date</label><input id="pur-date" type="date"></div>
+          <div class="field"><label>Supplier *</label><select id="pur-supplier"></select></div>
+          <div class="field"><label>Note</label><input id="pur-note" type="text" placeholder="Optional"></div>
+        </div>
+        <h3 class="section-title">Items Purchased</h3>
+        <div id="purchase-lines">
+          <div class="purchase-line-row purchase-line" data-line="0">
+            <select class="p-line-product"></select>
+            <input class="p-line-qty" type="number" min="1" step="1" value="1">
+            <input class="p-line-cost" type="number" min="0" step="0.01" value="0">
+            <div class="line-amt">0.00</div>
+            <button type="button" class="btn btn-sm btn-danger" data-action="purchase-line-remove">✕</button>
+          </div>
+        </div>
+        <button type="button" class="btn btn-sm" data-action="purchase-add-line">+ Add Item</button>
+        <div class="form-grid" style="margin-top:12px">
+          <div class="field"><label>Total Cost</label><input id="pur-total" type="text" value="0.00" readonly></div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn" data-action="nav-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary">📥 Save Purchase & Add Stock</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="print-area" class="print-area hidden"></div>
+
+  <div id="toast-container"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
+  <script src="app.js?v=4"></script>
+  <script>
+    try {
+      if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+        navigator.serviceWorker.register('./sw.js').catch(function () {});
+      }
+    } catch (e) {}
+  </script>
+</body>
+</html>
