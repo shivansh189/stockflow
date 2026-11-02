@@ -96,7 +96,17 @@ vercel --prod
 3. Your app is live at `https://<username>.github.io/<repo>/`.
 
 ### PWA (installable on phones)
-The app includes a manifest + service worker (`manifest.json`, `sw.js`, icons). After opening the URL on an Android/iPhone browser, tap **Add to Home Screen** — StockFlow opens full-screen like a native app and keeps working offline (data saved on that device). Note: this version stores data in the browser's localStorage, so data **does not sync between devices** — each device keeps its own records.## Roadmap / suggested next features
+The app includes a manifest + service worker (`manifest.json`, `sw.js`, icons). After opening the URL on an Android/iPhone browser, tap **Add to Home Screen** — StockFlow opens full-screen like a native app and keeps working offline (data saved on that device).
+
+### ☁️ Cloud Sync (one shared inventory)
+All devices (PC + phone) share the **same live inventory** through a free Supabase backend (`config.js` holds the baked-in project config; a per-device override can be set on the **☁️ Sync / Cloud** page):
+
+- Every save is auto-pushed; app opens auto-pull the latest cloud copy.
+- Open devices update **in real time** (save on PC → phone updates in seconds).
+- Each shop has a **shop code** (e.g. `SF-SHIV-01`); a second shop can use a different code for its own separate inventory.
+- The sync table (`stockflow_state`) is one row per shop holding the shop's JSON state — setup SQL is available in the Sync page.
+
+> ⚠️ Supabase free projects pause after ~1 week of inactivity — with daily shop use it stays active; otherwise press Restore in the Supabase dashboard.## Roadmap / suggested next features
 
 - Explicit **sales returns** flow linking back to an invoice (restock + credit note).
 - **Profit estimates** on the dashboard (cost price is now tracked via purchases — just needs the calc).
