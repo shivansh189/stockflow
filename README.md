@@ -2,6 +2,15 @@
 
 A simple, easy-to-use web app to organize your stock by quantity, with **Add Stock** and **Deduct Stock** flows, **bill/invoice image upload with AI (OCR)** to auto-extract product name and quantity, plus a full **GST billing, purchase entry, khata and automobile-shop toolkit**.
 
+## 🔗 Live
+
+| Where | Link |
+|---|---|
+| **Vercel (production)** | https://stockflow-eight-puce.vercel.app |
+| **GitHub repo** | https://github.com/shivansh189/stockflow |
+
+> Works on both mobile and desktop browsers. On a phone, use the browser menu → **Add to Home Screen** to install it as an app.
+
 ## Run it
 
 Any static server works. Easiest options:
@@ -86,9 +95,7 @@ vercel --prod
 3. Your app is live at `https://<username>.github.io/<repo>/`.
 
 ### PWA (installable on phones)
-The app includes a manifest + service worker (`manifest.json`, `sw.js`, icons). After opening the URL on an Android/iPhone browser, tap **Add to Home Screen** — StockFlow opens full-screen like a native app and keeps working offline (data saved on that device). Note: this version stores data in the browser's localStorage, so data **does not sync between devices** — each device keeps its own records.
-
-## Roadmap / suggested next features
+The app includes a manifest + service worker (`manifest.json`, `sw.js`, icons). After opening the URL on an Android/iPhone browser, tap **Add to Home Screen** — StockFlow opens full-screen like a native app and keeps working offline (data saved on that device). Note: this version stores data in the browser's localStorage, so data **does not sync between devices** — each device keeps its own records.## Roadmap / suggested next features
 
 - Explicit **sales returns** flow linking back to an invoice (restock + credit note).
 - **Profit estimates** on the dashboard (cost price is now tracked via purchases — just needs the calc).
