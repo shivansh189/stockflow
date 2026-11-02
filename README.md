@@ -7,6 +7,7 @@ A simple, easy-to-use web app to organize your stock by quantity, with **Add Sto
 | Where | Link |
 |---|---|
 | **Vercel (production)** | https://stockflow-eight-puce.vercel.app |
+| **GitHub Pages** (auto-updates on push) | https://shivansh189.github.io/stockflow/ |
 | **GitHub repo** | https://github.com/shivansh189/stockflow |
 
 > Works on both mobile and desktop browsers. On a phone, use the browser menu → **Add to Home Screen** to install it as an app.
