@@ -181,6 +181,23 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); o
 .toast.error { background: #b91c1c; }
 @keyframes slidein { from { transform: translateX(20px); opacity: 0; } to { transform: none; opacity: 1; } }
 
+/* ---------- Cloud sync ---------- */
+.cloud-badge {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: 99px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.cloud-ok { background: #dcfce7; color: #166534; }
+.cloud-off { background: #e2e8f0; color: var(--muted); }
+.cloud-err { background: #fee2e2; color: #991b1b; }
+ol.steps { padding-left: 18px; display: grid; gap: 6px; margin: 8px 0 12px; color: #334155; }
+table.kv { width: 100%; border-collapse: collapse; margin: 8px 0; }
+table.kv td { padding: 7px 6px; border-bottom: 1px solid var(--border); font-size: 14px; }
+table.kv td:first-child { color: var(--muted); width: 110px; }
+
 /* ---------- Line item rows (invoice / purchase) ---------- */
 .invoice-line-row, .purchase-line-row {
   display: grid;

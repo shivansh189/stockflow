@@ -43,6 +43,9 @@
         <button class="nav-item" data-action="nav-transactions">
           <span class="nav-icon">🧾</span><span>Transactions</span>
         </button>
+        <button class="nav-item" data-action="nav-sync">
+          <span class="nav-icon">☁️</span><span>Sync / Cloud</span>
+        </button>
       </nav>
       <div class="sidebar-footer">StockFlow · Inventory made simple</div>
     </aside>
@@ -53,6 +56,7 @@
           <h1 id="page-title">Dashboard</h1>
           <p class="page-sub" id="page-sub">Overview of your inventory</p>
         </div>
+        <span id="cloud-badge" class="cloud-badge cloud-off" hidden>☁ Cloud off</span>
         <div id="topbar-actions"></div>
       </header>
       <section id="page" class="page"></section>
@@ -206,7 +210,9 @@
   <div id="toast-container"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
-  <script src="app.js?v=4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="cloud.js?v=1"></script>
+  <script src="app.js?v=5"></script>
   <script>
     try {
       if ('serviceWorker' in navigator && location.protocol !== 'file:') {
