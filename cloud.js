@@ -20,10 +20,16 @@
   let lastPushStamp = 0;
 
   function loadCfg() {
-    try {
-      const raw = localStorage.getItem(CFG_KEY);
-      cfg = raw ? JSON.parse(raw) : null;
-    } catch (e) { cfg = null; }
+    if (!cfg) {
+      try {
+        const raw = localStorage.getItem(CFG_KEY);
+        cfg = raw ? JSON.parse(raw) : null;
+      } catch (e) { cfg = null; }
+    }
+    if (cfg && cfg.disabled) { client = null; return cfg; }
+    if (!cfg && window.STOCKFLOW_CLOUD_DEFAULT && window.STOCKFLOW_CLOUD_DEFAULT.url) {
+      cfg = window.STOCKFLOW_CLOUD_DEFAULT;
+    }
     if (cfg && cfg.url && cfg.key && window.supabase) {
       client = window.supabase.createClient(cfg.url, cfg.key);
     } else { client = null; }
@@ -39,10 +45,9 @@
   }
 
   function reset() {
-    try { localStorage.removeItem(CFG_KEY); } catch (e) {}
     unsubscribe();
     client = null;
-    cfg = null;
+    saveCfg({ disabled: true });
   }
 
   function connected() {
