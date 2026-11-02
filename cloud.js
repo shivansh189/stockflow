@@ -55,6 +55,18 @@
     } catch (e) { return { error: e.message }; }
   }
 
+  /* Redirect the browser to Google sign-in. On return, onAuth fires and the
+   * caller lifts the login gate. */
+  function loginWithGoogle() {
+    if (!isAvailable()) return Promise.resolve({ error: 'cloud not configured' });
+    const redirectTo = window.location.origin + window.location.pathname;
+    return client.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: redirectTo },
+    }).then(function (r) { return r && r.error ? { error: r.error.message } : { ok: true }; })
+      .catch(function (e) { return { error: e.message }; });
+  }
+
   async function signOut() {
     if (!isAvailable()) return;
     unsubscribe();
@@ -147,6 +159,7 @@
   window.CloudSync = {
     loadCfg,
     isAvailable,
+    loginWithGoogle,
     sendLoginCode,
     verifyLoginCode,
     signOut,

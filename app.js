@@ -30,7 +30,7 @@ const PAGE_TITLES = {
   serials: ['Serial Numbers', 'Track individual serial numbers'],
   parties: ['Parties', 'Customers, suppliers and payments (khata)'],
   transactions: ['Transactions', 'Full history of stock movements'],
-  sync: ['☁️ Cloud Save', 'Log in with your email — data saves to your account automatically'],
+  sync: ['☁️ Cloud Save', 'Your account saves everything automatically'],
 };
 
 /* ---------------- utils ---------------- */
@@ -935,6 +935,8 @@ function handleAction(e) {
     case 'nav-serials': setPage('serials'); return;
     case 'nav-transactions': setPage('transactions'); return;
     case 'nav-sync': setPage('sync'); return;
+    case 'login-google': loginGoogle(); return;
+    case 'gate-verify': gateVerify(); return;
     case 'nav-cancel': closeBillModal(); closeProductModal(); closeInvoiceModal(); closePurchaseModal(); return;
     case 'party-tab': partyTab = el.dataset.tab; renderParties(); return;
     case 'goto-add': if (el.dataset.id) openProductModal(state.products.find(p => p.id === el.dataset.id) || null); else setPage('add'); return;
@@ -979,6 +981,7 @@ function handleChange(e) {
 
 function handleSubmit(e) {
   const form = e.target;
+  if (form.id === 'gate-email-form') { e.preventDefault(); gateEmailSubmit(e); return; }
   if (form.id === 'product-form') { e.preventDefault(); handleProductSave(e); return; }
   if (form.id === 'invoice-form') { e.preventDefault(); handleInvoiceSave(e); return; }
   if (form.id === 'purchase-form') { e.preventDefault(); handlePurchaseSave(e); return; }
@@ -1112,6 +1115,83 @@ function onCloudUpdate(ts, data) {
   toast('☁️ Updated from another device');
 }
 
+/* ---------------- login gate ---------------- */
+function loginGateHtml() {
+  return `<div style="min-height:100vh;background:linear-gradient(160deg,#0f172a 0%,#1e1b4b 100%);display:flex;align-items:center;justify-content:center;padding:20px">
+    <div class="card" style="max-width:420px;width:100%;text-align:center;padding:34px 26px">
+      <div style="font-size:40px;line-height:1">📦</div>
+      <h2 style="margin:10px 0 4px;font-size:22px">StockFlow</h2>
+      <p class="muted" style="margin:0 0 22px">Your shop's inventory, bills & khata — saved to your cloud account.</p>
+      <button class="btn g-btn" data-action="login-google" style="width:100%;padding:12px;font-size:15px">Continue with Google</button>
+      <div class="g-divider">or sign in with an email code</div>
+      <form id="gate-email-form" autocomplete="email" style="display:flex;gap:8px">
+        <input id="gate-email" type="email" placeholder="your@gmail.com" required style="flex:1;padding:10px">
+        <button type="submit" class="btn">Send code</button>
+      </form>
+      <div id="gate-status" style="margin-top:14px;font-size:13px;color:var(--muted);min-height:18px"></div>
+    </div>
+  </div>`;
+}
+
+function showLoginGate() {
+  let gate = document.getElementById('login-gate');
+  if (!gate) {
+    gate = document.createElement('div');
+    gate.id = 'login-gate';
+    document.body.appendChild(gate);
+  }
+  gate.style.cssText = 'position:fixed;inset:0;z-index:90;background:#0f172a;overflow:auto;display:flex;align-items:center;justify-content:center';
+  gate.innerHTML = loginGateHtml();
+  const mainNode = document.querySelector('.main');
+  const sidebarNode = document.querySelector('.sidebar');
+  if (mainNode) mainNode.style.visibility = 'hidden';
+  if (sidebarNode) sidebarNode.style.visibility = 'hidden';
+}
+
+function hideLoginGate() {
+  const gate = document.getElementById('login-gate');
+  if (gate) gate.remove();
+  const mainNode = document.querySelector('.main');
+  const sidebarNode = document.querySelector('.sidebar');
+  if (mainNode) mainNode.style.visibility = '';
+  if (sidebarNode) sidebarNode.style.visibility = '';
+}
+
+async function loginGoogle() {
+  const status = document.getElementById('gate-status');
+  if (status) status.textContent = 'Opening Google sign-in…';
+  CloudSync.loginWithGoogle().then(function (res) {
+    if (status) status.textContent = res && res.error ? '❌ ' + res.error : 'Redirecting to Google…';
+  });
+}
+
+async function gateEmailSubmit(e) {
+  e.preventDefault();
+  const email = document.getElementById('gate-email').value.trim();
+  const status = document.getElementById('gate-status');
+  if (!email || email.indexOf('@') < 1) { status.textContent = 'Enter a valid email'; return; }
+  status.textContent = 'Sending code…';
+  const res = await CloudSync.sendLoginCode(email);
+  if (res && res.error) { status.textContent = '❌ ' + res.error; return; }
+  cloudAuthEmail = email;
+  cloudSessionEmail = null;
+  status.innerHTML = '📧 A 6-digit code was sent to <strong>' + esc(email) + '</strong> (also check spam). Enter it below:<br>' +
+    '<div style="display:flex;gap:8px;margin-top:10px"><input id="gate-code" inputmode="numeric" maxlength="10" placeholder="123456" style="flex:1;padding:10px;letter-spacing:3px;text-align:center"><button type="button" class="btn btn-primary" data-action="gate-verify">Verify</button></div>';
+}
+
+async function gateVerify() {
+  const codeEl = document.getElementById('gate-code');
+  const status = document.getElementById('gate-status');
+  if (!codeEl) return;
+  const token = codeEl.value.trim();
+  if (!token) { status.textContent = 'Enter the code from your email'; return; }
+  status.textContent = 'Verifying…';
+  const res = await CloudSync.verifyLoginCode(cloudAuthEmail || (document.getElementById('gate-email') || {}).value || '', token);
+  if (res && res.error) { status.textContent = '❌ ' + res.error; return; }
+  await afterCloudLogin(false);
+  setPage('dashboard');
+}
+
 /* ---------------- sync page ---------------- */
 
 function renderSync() {
@@ -1133,8 +1213,10 @@ function renderSync() {
     </div>`;
   } else if (cloudAuthStage === 'email') {
     html += `<div class="card" style="max-width:520px">
-      <h3>🔑 Save & sync with your email</h3>
-      <p class="muted">Your shop data is saved under your own email account. Each device signs in once — then everything syncs automatically.</p>
+      <h3>🔑 Save & sync with your account</h3>
+      <p class="muted">Your shop data is saved under your own account. Each device signs in once — then everything syncs automatically.</p>
+      <button class="btn g-btn" data-action="login-google" style="width:100%;padding:12px;font-size:15px;margin-bottom:6px">Continue with Google</button>
+      <div class="g-divider">or with an email code</div>
       <form id="cloud-email-form" autocomplete="email">
         <div class="field">
           <label>Your email (Gmail works great)</label>
@@ -1232,13 +1314,26 @@ function bootApp() {
     updateCloudBadge({ ok: false, reason: 'signed-out' });
     return;
   }
+  showLoginGate();
   CloudSync.getSession().then(function (s) {
     if (s && s.user) {
-      afterCloudLogin(true);
+      afterCloudLogin(true).then(function () { hideLoginGate(); });
     } else {
       cloudSessionEmail = null;
       updateCloudBadge({ ok: false, reason: 'signed-out' });
     }
+  });
+  CloudSync.onAuth(function () {
+    CloudSync.getSession().then(function (s) {
+      if (s && s.user) {
+        afterCloudLogin(true).then(function () { hideLoginGate(); setPage('dashboard'); });
+      } else {
+        cloudSessionEmail = null;
+        setPage('dashboard');
+        updateCloudBadge({ ok: false, reason: 'signed-out' });
+        showLoginGate();
+      }
+    });
   });
 }
 
