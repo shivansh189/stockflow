@@ -161,6 +161,40 @@ function render() {
 function openQuickSheet() { document.getElementById('quick-sheet').removeAttribute('hidden'); }
 function closeQuickSheet() { const s = document.getElementById('quick-sheet'); if (s) s.setAttribute('hidden', ''); }
 
+/* ---------------- success popup ---------------- */
+let successTimer = null;
+function showSuccess(title, sub, viewAction) {
+  let ov = document.getElementById('success-pop');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'success-pop';
+    ov.className = 'success-overlay';
+    document.body.appendChild(ov);
+  }
+  const viewBtn = viewAction ? `<button type="button" class="btn" data-action="success-view" data-view="${viewAction}">See it →</button>` : '';
+  ov.innerHTML = `<div class="success-card">
+    <div class="success-check">✓</div>
+    <h3>${esc(title)}</h3>
+    <p>${esc(sub || '')}</p>
+    <div class="row-actions">
+      ${viewBtn}
+      <button type="button" class="btn btn-primary" data-action="success-close">Nice!</button>
+    </div>
+  </div>`;
+  ov.removeAttribute('hidden');
+  if (successTimer) clearTimeout(successTimer);
+  successTimer = setTimeout(function () { closeSuccess(); }, 3200);
+}
+function closeSuccess() {
+  const ov = document.getElementById('success-pop');
+  if (ov) ov.setAttribute('hidden', '');
+  if (successTimer) { clearTimeout(successTimer); successTimer = null; }
+}
+
+/* ---------------- "just added" tracking ---------------- */
+const justAddedIds = new Set();
+function markJustAdded(txId) { justAddedIds.add(txId); if (justAddedIds.size > 8) justAddedIds.delete(justAddedIds.values().next().value); }
+
 function topbarActions(page) {
   let btn = '';
   if (page === 'stock') btn = `<button class="btn btn-primary" data-action="product-new">✚ New Product</button>`;
@@ -447,8 +481,8 @@ function confirmBillAdd() {
     name, sku: '', category: '', unitPrice: price, quantity: qty, source: 'bill', note: 'From bill',
   });
   closeBillModal();
-  toast(`✅ Added ${qty} × ${name} from bill.`);
   setPage('transactions');
+  showSuccess('✅ Added from Bill!', `${qty} × ${name} is now in your stock`, 'transactions');
 }
 
 /* ---------------- stock operations ---------------- */
@@ -474,9 +508,10 @@ function addStockEntry({ productId, name, sku, category, unitPrice, quantity, so
   if (name) product.name = name;
   if (category) product.category = category;
   if (num(unitPrice)) product.unitPrice = num(unitPrice);
-  state.transactions.unshift({ id: uid(), type: 'add', productId: product.id, productName: product.name, quantity: qty, serialNumbers: [], source: source || 'manual', note: note || '', date: new Date().toISOString() });
+  const txId = uid();
+  state.transactions.unshift({ id: txId, type: 'add', productId: product.id, productName: product.name, quantity: qty, serialNumbers: [], source: source || 'manual', note: note || '', date: new Date().toISOString() });
   saveState(); render();
-  return { ok: true, product, isNew };
+  return { ok: true, product, isNew, txId };
 }
 
 function deductStockEntry({ productId, quantity, serialNumbers, reason, source }) {
@@ -491,9 +526,10 @@ function deductStockEntry({ productId, quantity, serialNumbers, reason, source }
     const s = state.serials.find(x => x.productId === productId && x.serialNumber === sn && x.status === 'in_stock');
     if (s) { s.status = 'sold'; marked.push(sn); }
   });
-  state.transactions.unshift({ id: uid(), type: 'deduct', productId: product.id, productName: product.name, quantity: qty, serialNumbers: marked, source: source || 'manual', note: reason || '', date: new Date().toISOString() });
+  const tx = { id: uid(), type: 'deduct', productId: product.id, productName: product.name, quantity: qty, serialNumbers: marked, source: source || 'manual', note: reason || '', date: new Date().toISOString() };
+  state.transactions.unshift(tx);
   saveState(); render();
-  return { ok: true };
+  return { ok: true, txId: tx.id, product };
 }
 
 /* ---------------- serials ---------------- */
@@ -544,7 +580,7 @@ function addSerialFromForm(el) {
   state.serials.push({ id: uid(), productId: product.id, serialNumber: sn, status: 'in_stock' });
   document.getElementById('new-serial').value = '';
   saveState(); render();
-  toast(`✅ Serial ${sn} added to ${product.name}`);
+  showSuccess('✅ Serial Added!', sn + ' → ' + product.name, 'serials');
 }
 
 function setSerialStatus(productId, serialNumber, status) {
@@ -560,7 +596,8 @@ function renderTransactions() {
     html += `<tr><td colspan="6"><div class="empty">No transactions yet.</div></td></tr>`;
   }
   state.transactions.forEach(t => {
-    html += `<tr>
+    const isNew = justAddedIds.has(t.id);
+    html += `<tr class="${isNew ? 'tx-new' : ''}">
       <td style="white-space:nowrap">${fmtDate(t.date)}</td>
       <td><span class="badge ${t.type === 'add' ? 'badge-add' : 'badge-deduct'}">${t.type === 'add' ? 'ADD' : 'DEDUCT'}</span></td>
       <td>${esc(t.productName)}</td>
@@ -814,7 +851,7 @@ function handleInvoiceSave(e) {
     });
   }
   saveState(); render(); closeInvoiceModal();
-  toast(`✅ Invoice ${invoice.invoiceNo} saved. Stock deducted for ${lines.length} item(s).`);
+  showSuccess('✅ Invoice Created!', `${invoice.invoiceNo} · ${fmtMoney(invoice.total)} · stock deducted automatically`, 'billing');
 }
 
 /* ---------------- purchases (purchase entry) ---------------- */
@@ -947,7 +984,7 @@ function handlePurchaseSave(e) {
     }
   });
   saveState(); render(); closePurchaseModal();
-  toast(`✅ Purchase ${purchase.purchaseNo} saved (${fmtMoney(total)}). Stock added for ${lines.length} item(s).`);
+  showSuccess('✅ Purchase Saved!', `${purchase.purchaseNo} · ${fmtMoney(total)} · stock added for ${lines.length} item(s)`, 'transactions');
 }
 
 /* ---------------- parties & payments ---------------- */
@@ -1088,7 +1125,8 @@ function handlePaymentSave(e) {
   if (!payment.partyId || !(payment.amount > 0)) { toast('Select a party and enter a valid amount', 'error'); return; }
   state.payments.unshift(payment);
   if (payment.invoiceId) { const inv = state.invoices.find(i => i.id === payment.invoiceId); if (inv) inv.status = 'paid'; }
-  saveState(); render(); toast(`✅ Payment of ${fmtMoney(payment.amount)} recorded via ${payment.method}.`);
+  saveState(); render();
+  showSuccess('✅ Payment Recorded!', `${fmtMoney(payment.amount)} via ${payment.method}${payment.invoiceId ? ' · invoice marked paid' : ''}`, 'parties');
 }
 
 /* ---------------- product modal ---------------- */
@@ -1137,10 +1175,10 @@ function handleProductSave(e) {
   if (editingProductId) {
     const p = state.products.find(x => x.id === editingProductId);
     if (p) { p.name = name; p.sku = sku; p.category = category; p.unitPrice = unitPrice; p.lowStockThreshold = threshold; p.quantity = qty; p.partNumber = part; p.brand = brand; p.vehicleCompatibility = vehicle; }
-    saveState(); render(); closeProductModal(); toast('✅ Product updated');
+    saveState(); render(); closeProductModal(); showSuccess('✅ Product Updated!', name + ' saved', 'stock');
   } else {
     addStockEntry({ productId: null, name, sku, category, unitPrice, quantity: qty, source: 'manual', note: 'Product created', partNumber: part, brand: brand, vehicleCompatibility: vehicle });
-    closeProductModal(); toast('✅ Product added — view it in 📦 Stock');
+    closeProductModal(); showSuccess('✅ Product Created!', name + ' is now in your Stock list', 'transactions');
   }
 }
 
@@ -1179,12 +1217,13 @@ function handlePartySave(e) {
   if (editingPartyId) {
     const p = state.parties.find(x => x.id === editingPartyId);
     if (p) Object.assign(p, data);
-    toast('✅ ' + name + ' updated');
+    saveState(); closePartyModal(); render();
+    showSuccess('✅ Party Updated!', name, 'parties');
   } else {
     state.parties.push(Object.assign({ id: uid() }, data));
-    toast('✅ ' + name + ' added to ' + (data.type === 'customer' ? 'customers' : 'suppliers'));
+    saveState(); closePartyModal(); render();
+    showSuccess('✅ Party Added!', name + ' → ' + (data.type === 'customer' ? 'Customers' : 'Suppliers'), 'parties');
   }
-  saveState(); closePartyModal(); render();
 }
 
 function deleteParty(id) {
@@ -1234,6 +1273,8 @@ function handleAction(e) {
     case 'nav-more': setPage('more'); return;
     case 'open-quick': openQuickSheet(); return;
     case 'close-quick': closeQuickSheet(); return;
+    case 'success-close': closeSuccess(); return;
+    case 'success-view': { const v = el.dataset.view; closeSuccess(); setPage(v === 'transactions' ? 'transactions' : v); return; }
     case 'pay-quick': partyTab = 'payments'; setPage('parties'); return;
     case 'login-google': loginGoogle(); return;
     case 'gate-verify': gateVerify(); return;
@@ -1324,7 +1365,8 @@ function handleManualAdd(e) {
     manualProductId = '';
     document.getElementById('manual-product').value = '';
     document.getElementById('manual-new-fields').classList.add('hidden');
-    toast(`✅ Added ${qty} units${existing ? ' to ' + existing.name : ''}.`);
+    markJustAdded(res.txId);
+    showSuccess('✅ Stock Added!', `${qty} units${existing ? ' of ' + existing.name : ' of ' + res.product.name} · new total ${res.product.quantity} in stock`, 'transactions');
   }
 }
 
@@ -1342,7 +1384,8 @@ function handleDeduct(e) {
   if (res.ok) {
     document.getElementById('deduct-qty').value = 1;
     document.getElementById('deduct-note').value = '';
-    toast(`✅ Deducted ${qty} from ${product.name}.`);
+    markJustAdded(res.txId);
+    showSuccess('✅ Stock Removed!', `${qty} units of ${product.name} · ${product.quantity} left in stock`, 'transactions');
   }
 }
 
