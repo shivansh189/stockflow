@@ -673,7 +673,7 @@ function renderBilling() {
   const list = state.invoices.filter(inv => !billingPartyFilter || inv.customerId === billingPartyFilter);
   const fltName = (state.parties.find(p => p.id === billingPartyFilter) || {}).name;
   let html = `<div class="toolbar">
-    <div class="muted" style="font-size:13px">${billingPartyFilter ? `Showing bills of <strong>${esc(fltName)}</strong>` : ''}</div>
+    <div class="muted" style="font-size:13px">${billingPartyFilter ? `Showing bills of <strong>${esc(fltName)}</strong>` : `${state.invoices.length} bills total · ${state.invoices.filter(i => i.status === 'unpaid').length} unpaid`}</div>
     <div class="toolbar-right">
       ${billingPartyFilter ? `<button class="btn btn-sm" data-action="billing-clear-filter">✕ Clear filter</button>` : ''}
       <button class="btn btn-primary" data-action="goto-invoice">🧾 New Invoice</button>
@@ -703,7 +703,7 @@ function renderBilling() {
   });
   html += `</div>`;
   document.getElementById('page').innerHTML = html;
-  setTopbarActions(`<button class="btn btn-primary" data-action="goto-invoice">🧾 New Invoice</button>`);
+  setTopbarActions('');
   return html;
 }
 
@@ -762,13 +762,14 @@ function renderInvoiceLines() {
     const row = document.createElement('div');
     row.className = 'invoice-line invoice-line-row';
     row.dataset.line = i;
-    row.innerHTML = `<select class="line-product"><option value="">Select product…</option>${state.products.map(p => `<option value="${p.id}" ${p.id === it.productId ? 'selected' : ''}>${esc(p.name)}${p.unitPrice ? ' · ' + fmtMoney(p.unitPrice) : ''}</option>`).join('')}</select>
-      <input class="line-qty" type="number" min="1" step="1" value="${it.qty || 1}" inputmode="numeric" title="Quantity">
-      <input class="line-price" type="number" min="0" step="0.01" value="${it.unitPrice || 0}" inputmode="decimal" title="Rate ₹">
-      <select class="line-gst">${[0, 5, 12, 18, 28].map(g => `<option value="${g}" ${(it.gstRate || 18) === g ? 'selected' : ''}>${g}%</option>`).join('')}</select>
-      <input class="line-discount" type="number" min="0" step="0.01" value="${it.discount || 0}" inputmode="decimal" title="Discount ₹">
-      <div class="line-amt">0.00</div>
-      <button type="button" class="btn btn-sm btn-danger line-remove" data-action="invoice-line-remove">✕</button>`;
+    row.innerHTML = `
+      <div class="il-cell il-product"><label>Product</label><select class="line-product"><option value="">Select product…</option>${state.products.map(p => `<option value="${p.id}" ${p.id === it.productId ? 'selected' : ''}>${esc(p.name)}${p.unitPrice ? ' · ' + fmtMoney(p.unitPrice) : ''}</option>`).join('')}</select></div>
+      <div class="il-cell"><label>Qty</label><input class="line-qty" type="number" min="1" step="1" value="${it.qty || 1}" inputmode="numeric" placeholder="1"></div>
+      <div class="il-cell"><label>Rate ₹</label><input class="line-price" type="number" min="0" step="0.01" value="${it.unitPrice || 0}" inputmode="decimal" placeholder="0.00"></div>
+      <div class="il-cell"><label>GST %</label><select class="line-gst">${[0, 5, 12, 18, 28].map(g => `<option value="${g}" ${(it.gstRate || 18) === g ? 'selected' : ''}>${g}%</option>`).join('')}</select></div>
+      <div class="il-cell"><label>Disc ₹</label><input class="line-discount" type="number" min="0" step="0.01" value="${it.discount || 0}" inputmode="decimal" placeholder="0"></div>
+      <div class="il-cell"><label>Amount</label><div class="line-amt">0.00</div></div>
+      <div class="il-cell il-del"><label>&nbsp;</label><button type="button" class="btn btn-sm btn-danger line-remove" data-action="invoice-line-remove" title="Remove this item">✕</button></div>`;
     host.appendChild(row);
   });
   syncInvoiceLines();
@@ -856,7 +857,9 @@ function handleInvoiceSave(e) {
 
 /* ---------------- purchases (purchase entry) ---------------- */
 function renderPurchases() {
-  let html = `<div class="toolbar"><div></div><div class="toolbar-right"><button class="btn btn-primary" data-action="goto-purchase">📥 New Purchase Entry</button></div></div>`;
+  let html = `<div class="toolbar">
+    <div class="muted" style="font-size:13px">${(state.purchases || []).length} purchases recorded</div>
+    <div class="toolbar-right"><button class="btn btn-primary" data-action="goto-purchase">📥 New Purchase</button></div></div>`;
   html += `<div class="card table-wrap"><table class="data">`;
   html += `<thead><tr><th>Purchase</th><th>Date</th><th>Supplier</th><th>Items</th><th>Total Cost</th><th>Note</th></tr></thead><tbody>`;
   if ((state.purchases || []).length === 0) { html += `<tr><td colspan="6"><div class="empty">No purchases recorded yet. Record goods bought from a supplier to add stock automatically.</div></td></tr>`; }
@@ -877,7 +880,6 @@ function renderPurchases() {
 }
 
 let purchaseLines = [ { productId: '', qty: 1, unitCost: 0 } ];
-
 function openPurchaseModal() {
   document.getElementById('purchase-modal-title').textContent = '📥 New Purchase Entry';
   document.getElementById('pur-no').value = 'PUR-' + ((state.purchases || []).length + 1);
@@ -900,11 +902,12 @@ function renderPurchaseLines() {
     const row = document.createElement('div');
     row.className = 'purchase-line-row';
     row.dataset.line = i;
-    row.innerHTML = `<select class="p-line-product"><option value="">Select product…</option>${state.products.map(p => `<option value="${p.id}" ${p.id === it.productId ? 'selected' : ''}>${esc(p.name)}${p.unitPrice ? ' · buy ~' + fmtMoney(p.costPrice || p.unitPrice) : ''}</option>`).join('')}</select>
-      <input class="p-line-qty" type="number" min="1" step="1" value="${it.qty || 1}" inputmode="numeric" title="Quantity">
-      <input class="p-line-cost" type="number" min="0" step="0.01" value="${it.unitCost || 0}" inputmode="decimal" title="Cost ₹">
-      <div class="line-amt">0.00</div>
-      <button type="button" class="btn btn-sm btn-danger" data-action="purchase-line-remove">✕</button>`;
+    row.innerHTML = `
+      <div class="il-cell il-product"><label>Product</label><select class="p-line-product"><option value="">Select product…</option>${state.products.map(p => `<option value="${p.id}" ${p.id === it.productId ? 'selected' : ''}>${esc(p.name)}${p.unitPrice ? ' · buy ~' + fmtMoney(p.costPrice || p.unitPrice) : ''}</option>`).join('')}</select></div>
+      <div class="il-cell"><label>Qty</label><input class="p-line-qty" type="number" min="1" step="1" value="${it.qty || 1}" inputmode="numeric" placeholder="1"></div>
+      <div class="il-cell"><label>Cost ₹</label><input class="p-line-cost" type="number" min="0" step="0.01" value="${it.unitCost || 0}" inputmode="decimal" placeholder="0.00"></div>
+      <div class="il-cell"><label>Amount</label><div class="line-amt">0.00</div></div>
+      <div class="il-cell il-del"><label>&nbsp;</label><button type="button" class="btn btn-sm btn-danger" data-action="purchase-line-remove" title="Remove this item">✕</button></div>`;
     host.appendChild(row);
   });
   syncPurchaseLines();
@@ -1195,8 +1198,24 @@ function openPartyModal(party, type) {
   document.getElementById('party-vehreg').value = party ? (party.vehicleReg || '') : '';
   document.getElementById('party-vehmodel').value = party ? (party.vehicleModel || '') : '';
   document.getElementById('party-address').value = party ? (party.address || '') : '';
-  document.getElementById('modal-party').removeAttribute('hidden');
+  const pm = document.getElementById('modal-party');
+  pm.style.zIndex = 70;
+  pm.removeAttribute('hidden');
   setTimeout(function () { document.getElementById('party-name').focus(); }, 50);
+}
+
+/* refresh customer/supplier selects of modals that are already open (e.g. invoice / purchase) */
+function refreshOpenModalSelects(savedId, savedType) {
+  if (savedType === 'customer' && !document.getElementById('modal-invoice').hasAttribute('hidden')) {
+    document.getElementById('inv-customer').innerHTML =
+      '<option value="">Walk-in Customer</option>' +
+      state.parties.filter(p => p.type === 'customer').map(p => `<option value="${p.id}" ${p.id === savedId ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+  }
+  if (savedType === 'supplier' && !document.getElementById('modal-purchase').hasAttribute('hidden')) {
+    document.getElementById('pur-supplier').innerHTML =
+      '<option value="">— Select supplier —</option>' +
+      state.parties.filter(p => p.type === 'supplier').map(p => `<option value="${p.id}" ${p.id === savedId ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+  }
 }
 
 function closePartyModal() { document.getElementById('modal-party').setAttribute('hidden', ''); editingPartyId = null; }
@@ -1217,11 +1236,12 @@ function handlePartySave(e) {
   if (editingPartyId) {
     const p = state.parties.find(x => x.id === editingPartyId);
     if (p) Object.assign(p, data);
-    saveState(); closePartyModal(); render();
+    saveState(); refreshOpenModalSelects(p.id, data.type); closePartyModal(); render();
     showSuccess('✅ Party Updated!', name, 'parties');
   } else {
-    state.parties.push(Object.assign({ id: uid() }, data));
-    saveState(); closePartyModal(); render();
+    const saved = Object.assign({ id: uid() }, data);
+    state.parties.push(saved);
+    saveState(); refreshOpenModalSelects(saved.id, data.type); closePartyModal(); render();
     showSuccess('✅ Party Added!', name + ' → ' + (data.type === 'customer' ? 'Customers' : 'Suppliers'), 'parties');
   }
 }
@@ -1281,6 +1301,8 @@ function handleAction(e) {
     case 'nav-cancel': closeBillModal(); closeProductModal(); closeInvoiceModal(); closePurchaseModal(); closePartyModal(); return;
     case 'party-tab': partyTab = el.dataset.tab; renderParties(); return;
     case 'party-add': openPartyModal(null, el.dataset.type); return;
+    case 'party-quick-customer': openPartyModal(null, 'customer'); return;
+    case 'party-quick-supplier': openPartyModal(null, 'supplier'); return;
     case 'party-edit': openPartyModal(state.parties.find(p => p.id === el.dataset.id) || null); return;
     case 'party-delete': deleteParty(el.dataset.id); return;
     case 'party-invoices': billingPartyFilter = el.dataset.id; setPage('billing'); return;

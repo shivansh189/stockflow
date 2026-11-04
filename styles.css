@@ -208,25 +208,29 @@ table.kv { width: 100%; border-collapse: collapse; margin: 8px 0; }
 table.kv td { padding: 7px 6px; border-bottom: 1px solid var(--border); font-size: 14px; }
 table.kv td:first-child { color: var(--muted); width: 110px; }
 
-/* ---------- Line item rows (invoice / purchase) ---------- */
+/* ---------- Line item rows (invoice / purchase) — labeled cells ---------- */
 .invoice-line-row, .purchase-line-row {
   display: grid;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 8px;
-  padding: 8px;
+  gap: 6px 10px;
+  align-items: end;
+  margin-bottom: 10px;
+  padding: 12px 12px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 12px;
   background: #f8fafc;
 }
-.invoice-line-row { grid-template-columns: minmax(140px, 2.2fr) 72px 96px 76px 84px 84px 34px; }
-.purchase-line-row { grid-template-columns: minmax(140px, 2.2fr) 72px 96px 84px 34px; }
-.invoice-line-row select, .invoice-line-row input,
-.purchase-line-row select, .purchase-line-row input { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; background: #fff; }
-.invoice-line-row .line-amt, .purchase-line-row .line-amt { text-align: right; font-weight: 700; white-space: nowrap; }
-@media (max-width: 720px) {
-  .invoice-line-row { grid-template-columns: 1fr 1fr 34px 1fr 1fr; }
-  .purchase-line-row { grid-template-columns: 1fr 1fr 34px 1fr; }
+.invoice-line-row { grid-template-columns: minmax(150px, 2fr) 64px 100px 78px 90px 86px 30px; }
+.purchase-line-row { grid-template-columns: minmax(150px, 2fr) 64px 100px 96px 30px; }
+.il-cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.il-cell > label { font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.il-cell input, .il-cell select { width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; background: #fff; }
+.line-amt { text-align: right; font-weight: 700; white-space: nowrap; padding: 9px 2px; font-size: 14px; }
+.il-del { align-items: stretch; }
+.il-del .btn { padding: 7px 0; justify-content: center; }
+@media (max-width: 760px) {
+  .invoice-line-row, .purchase-line-row { grid-template-columns: 1fr 1fr 1fr; }
+  .invoice-line-row .il-product, .purchase-line-row .il-product { grid-column: 1 / -1; }
+  .invoice-line-row .il-del, .purchase-line-row .il-del { grid-column: 3; }
 }
 
 .print-area { display: none; }

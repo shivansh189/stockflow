@@ -9,7 +9,7 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon-192.png" type="image/png">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=6">
+  <link rel="stylesheet" href="styles.css?v=7">
 </head>
 <body>
   <div class="app-shell">
@@ -216,17 +216,26 @@
       </div>
       <form id="invoice-form">
         <div class="form-grid">
-          <div class="field"><label>Invoice No.</label><input id="inv-no" type="text" placeholder="INV-0001"></div>
-          <div class="field"><label>Date</label><input id="inv-date" type="date"></div>
+          <div class="field">
+            <label>Invoice No.</label>
+            <input id="inv-no" type="text" placeholder="INV-0001">
+            <p class="hint">Bill number — prints on the bill</p>
+          </div>
+          <div class="field">
+            <label>Date</label>
+            <input id="inv-date" type="date">
+            <p class="hint">Billing date (today by default)</p>
+          </div>
           <div class="field">
             <label>Customer (optional)</label>
             <select id="inv-customer"></select>
-            <p class="hint">Leave empty for a walk-in customer</p>
+            <button type="button" class="btn btn-sm" data-action="party-quick-customer">✚ New customer</button>
+            <p class="hint">Leave empty for a walk-in sale</p>
           </div>
           <div class="field">
             <label>Status</label>
             <select id="inv-status"><option value="unpaid">Unpaid</option><option value="paid">Paid</option><option value="cancelled">Cancelled</option></select>
-            <p class="hint">Unpaid keeps the amount in customer khata</p>
+            <p class="hint">Unpaid → goes to customer khata</p>
           </div>
         </div>
         <h3 class="section-title">Items Sold</h3>
@@ -261,7 +270,8 @@
           <div class="field">
             <label>Supplier *</label>
             <select id="pur-supplier"></select>
-            <p class="hint">Who you bought from — add new suppliers in Parties</p>
+            <button type="button" class="btn btn-sm" data-action="party-quick-supplier">✚ New supplier</button>
+            <p class="hint">Who you bought from — pick from list or quick-add</p>
           </div>
           <div class="field"><label>Note</label><input id="pur-note" type="text" placeholder="Optional"></div>
         </div>
@@ -288,7 +298,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=2"></script>
   <script src="cloud.js?v=4"></script>
-  <script src="app.js?v=9"></script>
+  <script src="app.js?v=10"></script>
   <script>
     try {
       if ('serviceWorker' in navigator && location.protocol !== 'file:') {
