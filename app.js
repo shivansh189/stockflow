@@ -21,16 +21,17 @@ let serialProductId = '';
 let manualProductId = '';
 let editingProductId = null;
 const PAGE_TITLES = {
-  dashboard: ['Dashboard', 'Overview of your inventory'],
-  stock: ['Stock', 'Manage products, quantities and status'],
-  add: ['Add Stock', 'Add new inventory or upload a bill to auto-extract'],
+  dashboard: ['Home', 'Your shop at a glance — tap ＋ for quick actions'],
+  stock: ['Stock', 'All your products, quantities and status'],
+  add: ['Add Stock', 'Record new stock you received'],
   deduct: ['Deduct Stock', 'Remove sold / damaged / lost quantities'],
-  purchases: ['Purchases / Purchase Entry', 'Record stock bought from suppliers (adds stock + supplier khata)'],
-  billing: ['Billing / GST Invoice', 'Create GST invoices, print bills, track sales'],
+  purchases: ['Purchases', 'Stock you bought from suppliers'],
+  billing: ['Bills / GST Invoices', 'Invoices you raised — tap a bill to print'],
   serials: ['Serial Numbers', 'Track individual serial numbers'],
-  parties: ['Parties', 'Customers, suppliers and payments (khata)'],
+  parties: ['Parties & Khata', 'Customers, suppliers, payments and who owes what'],
   transactions: ['Transactions', 'Full history of stock movements'],
   sync: ['☁️ Cloud Save', 'Your account saves everything automatically'],
+  more: ['More', 'All tools & features'],
 };
 
 /* ---------------- utils ---------------- */
@@ -126,14 +127,18 @@ loadState();
 /* ---------------- navigation & render ---------------- */
 function setPage(page) {
   currentPage = page;
-  document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.action === 'nav-' + page));
+  const NAV_ACTIVE = { dashboard: 'nav-dashboard', stock: 'nav-stock', billing: 'nav-billing', parties: 'nav-parties', more: 'nav-more' };
+  const target = NAV_ACTIVE[page] || 'nav-more';
+  document.querySelectorAll('.bn-item').forEach(b => b.classList.toggle('active', b.dataset.action === target));
   const [title, sub] = PAGE_TITLES[page] || PAGE_TITLES.dashboard;
   document.getElementById('page-title').textContent = title;
   document.getElementById('page-sub').textContent = sub;
+  window.scrollTo({ top: 0 });
   render();
 }
 
 function render() {
+  closeQuickSheet();
   const host = document.getElementById('page');
   let html = '';
   switch (currentPage) {
@@ -147,71 +152,114 @@ function render() {
     case 'parties': html = renderParties(); break;
     case 'transactions': html = renderTransactions(); break;
     case 'sync': html = renderSync(); break;
+    case 'more': html = renderMore(); break;
   }
   host.innerHTML = html;
 }
 
+/* ---------------- quick-create sheet ---------------- */
+function openQuickSheet() { document.getElementById('quick-sheet').removeAttribute('hidden'); }
+function closeQuickSheet() { const s = document.getElementById('quick-sheet'); if (s) s.setAttribute('hidden', ''); }
+
 function topbarActions(page) {
   let btn = '';
-  if (page === 'stock') btn = `<button class="btn btn-primary" data-action="goto-add">+ Add Product</button>`;
-  if (page === 'deduct') btn = `<button class="btn" data-action="goto-stock">📋 Go to Stock</button>`;
-  if (page === 'add') btn = `<button class="btn" data-action="nav-stock">📋 View Stock</button>`;
-  if (page === 'transactions') btn = `<button class="btn" data-action="nav-add">➕ Add Stock</button>`;
+  if (page === 'stock') btn = `<button class="btn btn-primary" data-action="product-new">✚ New Product</button>`;
+  if (page === 'billing') btn = `<button class="btn btn-primary" data-action="goto-invoice">🧾 New Invoice</button>`;
+  if (page === 'purchases') btn = `<button class="btn btn-primary" data-action="goto-purchase">📥 New Purchase</button>`;
   return btn;
 }
 function setTopbarActions(html) { document.getElementById('topbar-actions').innerHTML = html; }
 
 /* ---------------- dashboard ---------------- */
+function quickActionsHtml() {
+  return `<div class="qa-grid">
+    <button class="qa-tile" data-action="goto-invoice"><span class="qa-ic">🧾</span><span>New Invoice</span></button>
+    <button class="qa-tile" data-action="goto-purchase"><span class="qa-ic">📥</span><span>New Purchase</span></button>
+    <button class="qa-tile" data-action="nav-add"><span class="qa-ic">➕</span><span>Add Stock</span></button>
+    <button class="qa-tile" data-action="nav-deduct"><span class="qa-ic">➖</span><span>Deduct Stock</span></button>
+    <button class="qa-tile" data-action="party-add"><span class="qa-ic">👥</span><span>Add Party</span></button>
+    <button class="qa-tile" data-action="pay-quick"><span class="qa-ic">💳</span><span>Payment</span></button>
+  </div>`;
+}
+
 function renderDashboard() {
   const totalUnits = state.products.reduce((s, p) => s + (p.quantity || 0), 0);
   const stockValue = state.products.reduce((s, p) => s + (p.quantity || 0) * (p.unitPrice || 0), 0);
   const lowStock = state.products.filter(p => (p.quantity || 0) <= (p.lowStockThreshold || 0));
-
-  let html = `<div class="stats-grid">
-    <div class="card stat-card"><span class="stat-label">Total Products (SKUs)</span><span class="stat-value">${state.products.length}</span></div>
-    <div class="card stat-card"><span class="stat-label">Units in Stock</span><span class="stat-value">${totalUnits}</span></div>
-    <div class="card stat-card"><span class="stat-label">Stock Value</span><span class="stat-value">${fmtMoney(stockValue)}</span></div>
-    <div class="card stat-card warn"><span class="stat-label">Low / Out of Stock</span><span class="stat-value">${lowStock.length}</span></div>
-  </div>`;
   const todayStr = new Date().toISOString().slice(0, 10);
   const monthStr = new Date().toISOString().slice(0, 7);
   const validInvoices = state.invoices.filter(i => i.status !== 'cancelled');
+  const unpaid = validInvoices.filter(i => i.status === 'unpaid');
   const todaySales = validInvoices.filter(i => (i.date || '').slice(0, 10) === todayStr).reduce((s, i) => s + i.total, 0);
   const monthSales = validInvoices.filter(i => (i.date || '').slice(0, 7) === monthStr).reduce((s, i) => s + i.total, 0);
   const monthPurchases = (state.purchases || []).filter(pu => (pu.date || '').slice(0, 7) === monthStr).reduce((s, pu) => s + (pu.total || 0), 0);
-  html += `<div class="stats-grid">
+
+  const h = new Date().getHours();
+  const greet = h < 5 ? 'Working late?' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  const uname = cloudSessionEmail ? ' <strong>' + esc(cloudSessionEmail.split('@')[0].replace(/[._]/g, ' ')) + '</strong>' : '';
+
+  let html = `<div class="dash-greet"><h2>${greet}${uname}! 👋</h2><p class="muted">What's happening in your shop today</p></div>`;
+
+  html += `<h3 class="section-title">⚡ Quick Actions <span class="muted" style="font-size:12px;font-weight:400">— one tap to start</span></h3>`;
+  html += quickActionsHtml();
+
+  html += `<h3 class="section-title" style="margin-top:20px">📊 Today's Numbers</h3>`;
+  html += `<div class="stat-mini">
     <div class="card stat-card"><span class="stat-label">Today's Sales</span><span class="stat-value">${fmtMoney(todaySales)}</span></div>
     <div class="card stat-card"><span class="stat-label">This Month's Sales</span><span class="stat-value">${fmtMoney(monthSales)}</span></div>
-    <div class="card stat-card"><span class="stat-label">This Month's Purchases</span><span class="stat-value">${fmtMoney(monthPurchases)}</span></div>
+    <div class="card stat-card"><span class="stat-label">Stock Value</span><span class="stat-value">${fmtMoney(stockValue)}</span><span class="muted" style="font-size:12px">${state.products.length} products · ${totalUnits} units</span></div>
+    <div class="card stat-card warn"><span class="stat-label">Needs Attention</span><span class="stat-value">${lowStock.length}</span><span class="muted" style="font-size:12px">low / out of stock · ${unpaid.length} unpaid bills</span></div>
   </div>`;
 
-  html += `<div class="grid-2">`;
-  html += `<div class="card">`;
-  html += `<h3>⚠️ Low Stock Alerts</h3>`;
-  if (lowStock.length === 0) {
-    html += `<div class="empty">✅ All products are sufficiently stocked.</div>`;
+  html += `<div class="card" style="margin-bottom:16px">
+    <h3>🧾 Recent Activity</h3>
+    <a class="see-all muted" data-action="nav-transactions">See all →</a>`;
+  if (state.transactions.length === 0) {
+    html += `<div class="empty">No activity yet — start with ➕ Add Stock above.</div>`;
   } else {
-    lowStock.forEach(p => {
+    state.transactions.slice(0, 5).forEach(t => {
+      html += `<div class="list-row">
+        <div class="grow"><span class="badge ${t.type === 'add' ? 'badge-add' : 'badge-deduct'}">${t.type === 'add' ? '+' : '−'}${t.quantity}</span> <span class="strong">${esc(t.productName)}</span> <span class="muted" style="font-size:12px">via ${esc(t.source)}</span></div>
+        <div class="muted" style="font-size:12px;white-space:nowrap">${fmtDate(t.date)}</div>
+      </div>`;
+    });
+  }
+  html += `</div>`;
+
+  html += `<div class="card">
+    <h3>⚠️ Low Stock <a class="see-all muted" data-action="nav-stock">View stock →</a></h3>`;
+  if (lowStock.length === 0) {
+    html += `<div class="empty">✅ Everything is well stocked.</div>`;
+  } else {
+    lowStock.slice(0, 5).forEach(p => {
       const st = stockStatus(p);
       html += `<div class="list-row">
-        <div class="grow"><div class="strong">${esc(p.name)}</div><div class="muted" style="font-size:12px">${esc(p.sku || '')} · threshold ${p.lowStockThreshold}</div></div>
+        <div class="grow"><div class="strong">${esc(p.name)}</div><div class="muted" style="font-size:12px">${esc(p.sku || '')}</div></div>
         <div style="text-align:right"><span class="badge ${st.cls}">${st.label}</span><div style="font-weight:700;margin-top:4px">${p.quantity} / ${p.lowStockThreshold}</div></div>
       </div>`;
     });
   }
-  html += `</div><div class="card">`;
-  html += `<h3>🧾 Recent Transactions</h3>`;
-  if (state.transactions.length === 0) {
-    html += `<div class="empty">No transactions yet.</div>`;
-  } else {
-    state.transactions.slice(0, 6).forEach(t => {
-      html += `<div class="list-row">
-        <div class="grow"><span class="badge ${t.type === 'add' ? 'badge-add' : 'badge-deduct'}">${t.type === 'add' ? '+' : '−'}${t.quantity}</span> <span class="strong">${esc(t.productName)}</span> <span class="muted" style="font-size:12px">via ${t.source}</span></div>
-        <div class="muted" style="font-size:12px">${fmtDate(t.date)}</div>
-      </div>`;
-    });
-  }
-  html += `</div></div>`;
+  html += `</div>`;
+  setTopbarActions('');
+  return html;
+}
+
+/* ---------------- more ---------------- */
+function renderMore() {
+  const tiles = [
+    ['➕', 'Add Stock', 'New items or received quantity', 'nav-add'],
+    ['➖', 'Deduct Stock', 'Sales, damages, losses', 'nav-deduct'],
+    ['📥', 'Purchases', 'Bills from suppliers', 'nav-purchases'],
+    ['🔢', 'Serial Numbers', 'Track units one-by-one', 'nav-serials'],
+    ['🧾', 'Transactions', 'Every stock movement', 'nav-transactions'],
+    ['☁️', 'Cloud Save', 'Account & sync status', 'nav-sync'],
+  ];
+  let html = `<div class="tile-grid">`;
+  tiles.forEach(([ic, t, d, act]) => {
+    html += `<button class="tile" data-action="${act}"><span class="tile-ic">${ic}</span><span class="tile-t">${t}</span><span class="tile-d">${d}</span></button>`;
+  });
+  html += `</div>`;
+  setTopbarActions('');
   return html;
 }
 
@@ -220,8 +268,8 @@ function renderStock() {
   const q = (stockQuery || '').toLowerCase();
   const rows = state.products.filter(p => (p.name || '').toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q) || (p.category || '').toLowerCase().includes(q) || (p.partNumber || '').toLowerCase().includes(q) || (p.brand || '').toLowerCase().includes(q) || (p.vehicleCompatibility || '').toLowerCase().includes(q));
   let html = `<div class="toolbar">
-    <input class="search-input" id="stock-search" placeholder="🔍 Search by name, SKU or category..." value="${esc(stockQuery || '')}" oninput="stockQuery=this.value; render()">
-    <div class="toolbar-right"><button class="btn btn-primary" data-action="goto-add">+ Add Product</button></div>
+    <input class="search-input" id="stock-search" placeholder="🔍 Search by name, SKU, brand…" value="${esc(stockQuery || '')}" oninput="stockQuery=this.value; render()" enterkeyhint="search">
+    <div class="toolbar-right"><button class="btn btn-primary" data-action="product-new">✚ New Product</button></div>
   </div>`;
   html += `<div class="card table-wrap"><table class="data">`;
   html += `<thead><tr><th>Product</th><th>SKU</th><th>Category</th><th>Unit Price</th><th>In Stock</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead><tbody>`;
@@ -247,7 +295,7 @@ function renderStock() {
   });
   html += `</tbody></table></div>`;
   $('page').innerHTML = html;
-  setTopbarActions(`<button class="btn btn-primary" data-action="goto-add">+ Add Product</button>`);
+  setTopbarActions(`<button class="btn btn-primary" data-action="product-new">✚ New Product</button>`);
   return html;
 }
 
@@ -260,26 +308,35 @@ function renderAddStock() {
 
   if (addTab === 'manual') {
     html += `<form id="manual-add-form" class="card" style="max-width:560px" novalidate>
-      <h3>Quick Add Stock</h3>
+      <h3>➕ Received stock? Add it here</h3>
+      <p class="hint" style="margin:-6px 0 12px">Step 1: pick the item (or create a new one) · Step 2: enter how many units · done</p>
       <div class="field">
-        <label>Product</label>
+        <label>Step 1 · Product *</label>
         <select id="manual-product" onchange="manualProductId=this.value; document.getElementById('manual-new-fields').classList.toggle('hidden', this.value!=='new')">
           <option value="">— Select existing product —</option>
           ${state.products.map(p => `<option value="${p.id}" ${p.id === manualProductId ? 'selected' : ''}>${esc(p.name)} (${p.quantity} in stock)</option>`).join('')}
-          <option value="new">➕ Add as new product</option>
+          <option value="new">✚ Create a brand-new product</option>
         </select>
+        <p class="hint">Pick an item you already have, or create a new one</p>
       </div>
       <div id="manual-new-fields" class="hidden">
         <div class="form-grid">
-          <div class="field"><label>Product Name *</label><input id="manual-new-name" type="text" required></div>
-          <div class="field"><label>SKU</label><input id="manual-new-sku" type="text"></div>
-          <div class="field"><label>Category</label><input id="manual-new-category" type="text"></div>
-          <div class="field"><label>Unit Price</label><input id="manual-new-price" type="number" min="0" step="0.01"></div>
+          <div class="field"><label>New Product Name *</label><input id="manual-new-name" type="text" placeholder="e.g. Brake Pad Set"></div>
+          <div class="field"><label>SKU / Code</label><input id="manual-new-sku" type="text" placeholder="Auto if empty"></div>
+          <div class="field"><label>Category</label><input id="manual-new-category" type="text" placeholder="e.g. Brakes"></div>
+          <div class="field"><label>Selling Price ₹</label><input id="manual-new-price" type="number" min="0" step="0.01" placeholder="e.g. 450"></div>
         </div>
       </div>
-      <div class="field"><label>Quantity *</label><input id="manual-qty" type="number" min="1" step="1" value="1" required></div>
-      <div class="field"><label>Note</label><input id="manual-note" type="text" placeholder="e.g. Purchase from supplier"></div>
-      <button type="submit" class="btn btn-primary">➕ Add to Stock</button>
+      <div class="field">
+        <label>Step 2 · How many units arrived? *</label>
+        <input id="manual-qty" type="number" min="1" step="1" value="1" required inputmode="numeric">
+        <p class="hint">Whole number, e.g. 10</p>
+      </div>
+      <div class="field">
+        <label>Note (optional)</label>
+        <input id="manual-note" type="text" placeholder="e.g. From ABC Spares, Bill #42">
+      </div>
+      <button type="submit" class="btn btn-primary btn-lg">➕ Add to Stock</button>
     </form>`;
   } else {
     html += `<div class="card" style="max-width:560px">
@@ -529,25 +586,36 @@ function renderDeduct() {
     </div></div>`;
   }
   $('page').innerHTML = `<form id="deduct-form" class="card" style="max-width:560px" novalidate>
-    <h3>➖ Deduct Stock</h3>
-    <div class="field"><label>Product *</label><select id="deduct-product" onchange="deductProductId=this.value; render();">
-      <option value="">— Select product —</option>
-      ${state.products.map(p => `<option value="${p.id}" ${p.id === deductProductId ? 'selected' : ''}>${esc(p.name)} (${p.quantity} in stock)</option>`).join('')}
-    </select></div>
+    <h3>➖ Removing stock? (sale, damage, return…)</h3>
+    <div class="field">
+      <label>Step 1 · Product *</label>
+      <select id="deduct-product" onchange="deductProductId=this.value; render();">
+        <option value="">— Select product —</option>
+        ${state.products.map(p => `<option value="${p.id}" ${p.id === deductProductId ? 'selected' : ''}>${esc(p.name)} (${p.quantity} in stock)</option>`).join('')}
+      </select>
+    </div>
     <div id="deduct-product-summary" class="muted" style="margin:-6px 0 12px;font-size:13px"></div>
-    <div class="field"><label>Quantity to Deduct *</label><input id="deduct-qty" type="number" min="1" step="1" value="1" required></div>
+    <div class="field">
+      <label>Step 2 · How many units to remove? *</label>
+      <input id="deduct-qty" type="number" min="1" step="1" value="1" required inputmode="numeric">
+      <p class="hint">Whole number, e.g. 2</p>
+    </div>
     ${checklist}
-    <div class="field"><label>Reason *</label><select id="deduct-reason" required>
-      <option value="">— Select reason —</option>
-      <option value="Sale">Sale</option>
-      <option value="Return">Return</option>
-      <option value="Damage">Damage</option>
-      <option value="Loss">Loss / Theft</option>
-      <option value="Transfer">Transfer</option>
-      <option value="Other">Other</option>
-    </select></div>
-    <div class="field"><label>Note</label><input id="deduct-note" type="text" placeholder="Optional note"></div>
-    <button type="submit" class="btn btn-danger">➖ Deduct from Stock</button>
+    <div class="field">
+      <label>Step 3 · Why remove? *</label>
+      <select id="deduct-reason" required>
+        <option value="">— Select reason —</option>
+        <option value="Sale">Sold to customer</option>
+        <option value="Return">Return to supplier</option>
+        <option value="Damage">Damaged</option>
+        <option value="Loss">Loss / Theft</option>
+        <option value="Transfer">Transfer to another shop</option>
+        <option value="Other">Other</option>
+      </select>
+      <p class="hint">For billing customers use 🧾 Bills instead — invoices deduct stock automatically</p>
+    </div>
+    <div class="field"><label>Note (optional)</label><input id="deduct-note" type="text" placeholder="e.g. Sold to Ramesh"></div>
+    <button type="submit" class="btn btn-danger btn-lg">➖ Deduct from Stock</button>
   </form>`;
   setTopbarActions('');
   renderDeductProducts();
@@ -557,32 +625,48 @@ function renderDeduct() {
 function renderDeductProducts() {
   const summary = document.getElementById('deduct-product-summary');
   const product = state.products.find(p => p.id === deductProductId);
-  if (product) summary.textContent = `Current stock: ${product.quantity} ${product.name}${product.lowStockThreshold ? ` (low stock threshold: ${product.lowStockThreshold})` : ''}`;
+  if (product) summary.textContent = `📦 Current stock of ${product.name}: ${product.quantity} units`;
+  else summary.textContent = '';
 }
 
 /* ---------------- billing ---------------- */
+let billingPartyFilter = '';
+
 function renderBilling() {
-  let html = `<div class="toolbar"><div></div><div class="toolbar-right"><button class="btn btn-primary" data-action="goto-invoice">🧾 New GST Invoice</button></div></div>`;
-  html += `<div class="card table-wrap"><table class="data">`;
-  html += `<thead><tr><th>Invoice</th><th>Date</th><th>Customer</th><th>Items</th><th>Total</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead><tbody>`;
-  if (state.invoices.length === 0) { html += `<tr><td colspan="7"><div class="empty">No invoices yet. Create a GST invoice to bill a customer.</div></td></tr>`; }
-  state.invoices.forEach(inv => {
-    html += `<tr>
-      <td class="mono">${esc(inv.invoiceNo)}</td>
-      <td style="white-space:nowrap">${fmtDate(inv.date)}</td>
-      <td>${esc(inv.customerName)}</td>
-      <td>${inv.items ? inv.items.length : 0}</td>
-      <td><span class="strong">${fmtMoney(inv.total)}</span></td>
-      <td><span class="badge ${inv.status === 'paid' ? 'badge-ok' : inv.status === 'unpaid' ? 'badge-low' : 'badge-neutral'}">${inv.status}</span></td>
-      <td><div class="row-actions" style="justify-content:flex-end">
+  const list = state.invoices.filter(inv => !billingPartyFilter || inv.customerId === billingPartyFilter);
+  const fltName = (state.parties.find(p => p.id === billingPartyFilter) || {}).name;
+  let html = `<div class="toolbar">
+    <div class="muted" style="font-size:13px">${billingPartyFilter ? `Showing bills of <strong>${esc(fltName)}</strong>` : ''}</div>
+    <div class="toolbar-right">
+      ${billingPartyFilter ? `<button class="btn btn-sm" data-action="billing-clear-filter">✕ Clear filter</button>` : ''}
+      <button class="btn btn-primary" data-action="goto-invoice">🧾 New Invoice</button>
+    </div></div>`;
+  html += `<div class="cards-list">`;
+  if (list.length === 0) {
+    html += `<div class="card"><div class="empty">No bills yet.<br><button class="btn btn-primary" style="margin-top:12px" data-action="goto-invoice">🧾 Create your first invoice</button></div></div>`;
+  }
+  list.forEach(inv => {
+    const stCls = inv.status === 'paid' ? 'badge-ok' : inv.status === 'unpaid' ? 'badge-low' : 'badge-neutral';
+    html += `<div class="card party-card">
+      <div class="party-head">
+        <div>
+          <div class="strong">${esc(inv.customerName)}</div>
+          <div class="muted" style="font-size:12px"><span class="mono">${esc(inv.invoiceNo)}</span> · ${inv.items ? inv.items.length : 0} items · ${fmtDate(inv.date)}</div>
+        </div>
+        <div style="text-align:right">
+          <span class="badge ${stCls}">${inv.status}</span>
+          <div class="strong" style="margin-top:4px">${fmtMoney(inv.total)}</div>
+        </div>
+      </div>
+      <div class="row-actions" style="margin-top:10px">
         <button class="btn btn-sm" data-action="invoice-view" data-id="${inv.id}">👁 View</button>
         <button class="btn btn-sm" data-action="invoice-print" data-id="${inv.id}">🖨 Print</button>
-      </div></td>
-    </tr>`;
+      </div>
+    </div>`;
   });
-  html += `</tbody></table></div>`;
+  html += `</div>`;
   document.getElementById('page').innerHTML = html;
-  setTopbarActions('');
+  setTopbarActions(`<button class="btn btn-primary" data-action="goto-invoice">🧾 New Invoice</button>`);
   return html;
 }
 
@@ -641,23 +725,59 @@ function renderInvoiceLines() {
     const row = document.createElement('div');
     row.className = 'invoice-line invoice-line-row';
     row.dataset.line = i;
-    row.innerHTML = `<select class="line-product"><option value="">Select product…</option>${state.products.map(p => `<option value="${p.id}" ${p.id === it.productId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
-      <input class="line-qty" type="number" min="1" step="1" value="${it.qty || 1}">
-      <input class="line-price" type="number" min="0" step="0.01" value="${it.unitPrice || 0}">
+    row.innerHTML = `<select class="line-product"><option value="">Select product…</option>${state.products.map(p => `<option value="${p.id}" ${p.id === it.productId ? 'selected' : ''}>${esc(p.name)}${p.unitPrice ? ' · ' + fmtMoney(p.unitPrice) : ''}</option>`).join('')}</select>
+      <input class="line-qty" type="number" min="1" step="1" value="${it.qty || 1}" inputmode="numeric" title="Quantity">
+      <input class="line-price" type="number" min="0" step="0.01" value="${it.unitPrice || 0}" inputmode="decimal" title="Rate ₹">
       <select class="line-gst">${[0, 5, 12, 18, 28].map(g => `<option value="${g}" ${(it.gstRate || 18) === g ? 'selected' : ''}>${g}%</option>`).join('')}</select>
-      <input class="line-discount" type="number" min="0" step="0.01" value="${it.discount || 0}">
+      <input class="line-discount" type="number" min="0" step="0.01" value="${it.discount || 0}" inputmode="decimal" title="Discount ₹">
       <div class="line-amt">0.00</div>
       <button type="button" class="btn btn-sm btn-danger line-remove" data-action="invoice-line-remove">✕</button>`;
     host.appendChild(row);
   });
-  host.oninput = e => { const t = e.target; if (t && (t.classList.contains('line-qty') || t.classList.contains('line-price') || t.classList.contains('line-discount') || t.classList.contains('line-gst'))) computeInvoiceTotals(); };
+  syncInvoiceLines();
+  host.addEventListener('input', onInvoiceLineInput);
+  host.addEventListener('change', onInvoiceLineInput);
+}
+
+function onInvoiceLineInput(e) {
+  const t = e.target;
+  const row = t.closest && t.closest('.invoice-line-row');
+  if (!row) return;
+  syncInvoiceLines();
+  if (t.classList && t.classList.contains('line-product')) {
+    const i = parseInt(row.dataset.line);
+    const p = state.products.find(x => x.id === invoiceLines[i].productId);
+    if (p) {
+      invoiceLines[i].unitPrice = p.unitPrice || 0;
+      const priceEl = row.querySelector('.line-price');
+      if (priceEl) priceEl.value = invoiceLines[i].unitPrice.toFixed(2);
+      toast('Price auto-filled: ' + p.name + ' @ ' + fmtMoney(p.unitPrice || 0), 'info');
+    }
+  }
+  computeInvoiceTotals();
+}
+
+function syncInvoiceLines() {
+  const rows = document.querySelectorAll('#invoice-lines .invoice-line-row');
+  rows.forEach(row => {
+    const i = parseInt(row.dataset.line);
+    const l = invoiceLines[i];
+    if (!l) return;
+    l.productId = row.querySelector('.line-product').value;
+    l.qty = num(row.querySelector('.line-qty').value);
+    l.unitPrice = num(row.querySelector('.line-price').value);
+    l.gstRate = num(row.querySelector('.line-gst').value);
+    l.discount = num(row.querySelector('.line-discount').value);
+  });
 }
 
 function computeInvoiceTotals() {
+  const amtEls = document.querySelectorAll('#invoice-lines .line-amt');
   let subtotal = 0, gst = 0, discountTotal = 0;
-  invoiceLines.forEach(l => {
+  invoiceLines.forEach((l, i) => {
     const lt = (num(l.qty) * num(l.unitPrice)) - num(l.discount);
     subtotal += lt; discountTotal += num(l.discount); gst += lt * num(l.gstRate) / 100;
+    if (amtEls[i]) amtEls[i].textContent = lt.toFixed(2);
   });
   const total = subtotal + gst;
   document.getElementById('inv-subtotal').value = subtotal.toFixed(2);
@@ -743,14 +863,46 @@ function renderPurchaseLines() {
     const row = document.createElement('div');
     row.className = 'purchase-line-row';
     row.dataset.line = i;
-    row.innerHTML = `<select class="p-line-product"><option value="">Select product…</option>${state.products.map(p => `<option value="${p.id}" ${p.id === it.productId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
-      <input class="p-line-qty" type="number" min="1" step="1" value="${it.qty || 1}">
-      <input class="p-line-cost" type="number" min="0" step="0.01" value="${it.unitCost || 0}">
+    row.innerHTML = `<select class="p-line-product"><option value="">Select product…</option>${state.products.map(p => `<option value="${p.id}" ${p.id === it.productId ? 'selected' : ''}>${esc(p.name)}${p.unitPrice ? ' · buy ~' + fmtMoney(p.costPrice || p.unitPrice) : ''}</option>`).join('')}</select>
+      <input class="p-line-qty" type="number" min="1" step="1" value="${it.qty || 1}" inputmode="numeric" title="Quantity">
+      <input class="p-line-cost" type="number" min="0" step="0.01" value="${it.unitCost || 0}" inputmode="decimal" title="Cost ₹">
       <div class="line-amt">0.00</div>
       <button type="button" class="btn btn-sm btn-danger" data-action="purchase-line-remove">✕</button>`;
     host.appendChild(row);
   });
-  host.oninput = () => computePurchaseTotals();
+  syncPurchaseLines();
+  host.addEventListener('input', onPurchaseLineInput);
+  host.addEventListener('change', onPurchaseLineInput);
+}
+
+function onPurchaseLineInput(e) {
+  const t = e.target;
+  const row = t.closest && t.closest('.purchase-line-row');
+  if (!row) return;
+  syncPurchaseLines();
+  if (t.classList && t.classList.contains('p-line-product')) {
+    const i = parseInt(row.dataset.line);
+    const p = state.products.find(x => x.id === purchaseLines[i].productId);
+    if (p) {
+      purchaseLines[i].unitCost = num(p.costPrice) || p.unitPrice || 0;
+      const costEl = row.querySelector('.p-line-cost');
+      if (costEl) costEl.value = purchaseLines[i].unitCost.toFixed(2);
+      toast('Cost auto-filled from last purchase', 'info');
+    }
+  }
+  computePurchaseTotals();
+}
+
+function syncPurchaseLines() {
+  const rows = document.querySelectorAll('#purchase-lines .purchase-line-row');
+  rows.forEach(row => {
+    const i = parseInt(row.dataset.line);
+    const l = purchaseLines[i];
+    if (!l) return;
+    l.productId = row.querySelector('.p-line-product').value;
+    l.qty = num(row.querySelector('.p-line-qty').value);
+    l.unitCost = num(row.querySelector('.p-line-cost').value);
+  });
 }
 
 function computePurchaseTotals() {
@@ -799,46 +951,93 @@ function handlePurchaseSave(e) {
 }
 
 /* ---------------- parties & payments ---------------- */
+function partyOutstanding(type, id) {
+  if (type === 'customer') {
+    const invTotal = state.invoices.filter(i => i.customerId === id && i.status !== 'cancelled').reduce((s, i) => s + i.total, 0);
+    const paid = state.payments.filter(p => p.partyType === 'customer' && p.partyId === id).reduce((s, p) => s + p.amount, 0);
+    return invTotal - paid;
+  }
+  const purchTotal = (state.purchases || []).filter(pu => pu.supplierId === id).reduce((s, pu) => s + (pu.total || 0), 0);
+  const paid = state.payments.filter(p => p.partyType === 'supplier' && p.partyId === id).reduce((s, p) => s + (p.amount || 0), 0);
+  return purchTotal - paid;
+}
+
 function renderParties() {
   const tab = partyTab;
   let html = `<div class="tabs">
     <button class="tab ${tab === 'customers' ? 'active' : ''}" data-action="party-tab" data-tab="customers">👥 Customers</button>
     <button class="tab ${tab === 'suppliers' ? 'active' : ''}" data-action="party-tab" data-tab="suppliers">🏭 Suppliers</button>
-    <button class="tab ${tab === 'payments' ? 'active' : ''}" data-action="party-tab" data-tab="payments">💳 Payments / Khata</button>
+    <button class="tab ${tab === 'payments' ? 'active' : ''}" data-action="party-tab" data-tab="payments">💳 Khata</button>
   </div>`;
-  if (tab === 'customers') {
-    html += `<div class="card table-wrap"><table class="data"><thead><tr><th>Customer</th><th>Phone</th><th>Vehicle</th><th>GST</th><th>Outstanding</th></tr></thead><tbody>`;
-    const customers = state.parties.filter(p => p.type === 'customer');
-    if (customers.length === 0) html += `<tr><td colspan="5"><div class="empty">No customers yet.</div></td></tr>`;
-    customers.forEach(c => {
-      const invTotal = state.invoices.filter(i => i.customerId === c.id && i.status !== 'cancelled').reduce((s, i) => s + i.total, 0);
-      const paid = state.payments.filter(p => p.partyType === 'customer' && p.partyId === c.id).reduce((s, p) => s + p.amount, 0);
-      const outstanding = invTotal - paid;
-      html += `<tr><td><div class="strong">${esc(c.name)}</div></td><td>${esc(c.phone || '—')}</td><td>${esc(c.vehicleReg || '—')} / ${esc(c.vehicleModel || '—')}</td><td>${esc(c.gst || '—')}</td><td><span class="strong">${fmtMoney(outstanding)}</span></td></tr>`;
-    });
-    html += `</tbody></table></div>`;
-  } else if (tab === 'suppliers') {
-    html += `<div class="card table-wrap"><table class="data"><thead><tr><th>Supplier</th><th>Phone</th><th>GST</th><th>Purchases</th><th>Outstanding (Owed)</th><th>Address</th></tr></thead><tbody>`;
-    const suppliers = state.parties.filter(p => p.type === 'supplier');
-    if (suppliers.length === 0) html += `<tr><td colspan="6"><div class="empty">No suppliers yet.</div></td></tr>`;
-    suppliers.forEach(s => {
-      const purchTotal = (state.purchases || []).filter(pu => pu.supplierId === s.id).reduce((sum, pu) => sum + (pu.total || 0), 0);
-      const paidSup = state.payments.filter(p => p.partyType === 'supplier' && p.partyId === s.id).reduce((sum, p) => sum + (p.amount || 0), 0);
-      html += `<tr><td><div class="strong">${esc(s.name)}</div></td><td>${esc(s.phone || '—')}</td><td>${esc(s.gst || '—')}</td><td><span class="strong">${fmtMoney(purchTotal)}</span></td><td><span class="strong">${fmtMoney(purchTotal - paidSup)}</span></td><td>${esc(s.address || '—')}</td></tr>`;
-    });
-    html += `</tbody></table></div>`;
+  if (tab === 'customers' || tab === 'suppliers') {
+    const customers = tab === 'customers';
+    const list = state.parties.filter(p => p.type === tab);
+    html += `<div class="toolbar"><div class="muted" style="font-size:13px">${customers ? 'People you bill' : 'People you buy from'} · ${list.length}</div>
+      <div class="toolbar-right"><button class="btn btn-primary" data-action="party-add" data-type="${tab}">✚ Add ${customers ? 'Customer' : 'Supplier'}</button></div></div>`;
+    if (list.length === 0) {
+      html += `<div class="card"><div class="empty">No ${tab} yet.<br><button class="btn btn-primary" style="margin-top:12px" data-action="party-add" data-type="${tab}">✚ Add your first ${customers ? 'customer' : 'supplier'}</button></div></div>`;
+    } else {
+      html += `<div class="cards-list">`;
+      list.forEach(c => {
+        const outstanding = partyOutstanding(tab, c.id);
+        const oweCls = outstanding > 0.005 ? 'badge-low' : 'badge-ok';
+        const oweTxt = customers ? (outstanding > 0.005 ? 'owes you ' : 'all settled ') : (outstanding > 0.005 ? 'you owe ' : 'all settled ');
+        html += `<div class="card party-card">
+          <div class="party-head">
+            <div>
+              <div class="strong">${esc(c.name)}</div>
+              <div class="muted" style="font-size:12px">${esc(c.phone || '')}${c.phone && c.gst ? ' · ' : ''}${esc(c.gst || '')}</div>
+              ${c.vehicleReg ? `<div class="muted" style="font-size:12px">🚗 ${esc(c.vehicleReg)} ${esc(c.vehicleModel || '')}</div>` : ''}
+            </div>
+            <div style="text-align:right">
+              <span class="badge ${oweCls}">${oweTxt}${fmtMoney(Math.abs(outstanding))}</span>
+            </div>
+          </div>
+          <div class="row-actions" style="margin-top:10px">
+            <button class="btn btn-sm" data-action="party-edit" data-id="${c.id}">✏️ Edit</button>
+            <button class="btn btn-sm" data-action="pay-for" data-id="${c.id}">💳 ${customers ? 'Receive' : 'Pay'}</button>
+            <button class="btn btn-sm" data-action="party-invoices" data-id="${c.id}">🧾 Bills</button>
+            <button class="btn btn-sm btn-danger" data-action="party-delete" data-id="${c.id}">🗑</button>
+          </div>
+        </div>`;
+      });
+      html += `</div>`;
+    }
   } else {
     html += `<form id="payment-form" class="card" style="max-width:640px;margin-bottom:16px">
-      <h3>💳 Record Payment (Khata)</h3>
+      <h3>💳 Record Payment / Khata Entry</h3>
       <div class="form-grid">
-        <div class="field"><label>Party Type</label><select id="pay-party-type" onchange="partyTab='payments'; renderParties();"><option value="customer">Customer</option><option value="supplier">Supplier</option></select></div>
-        <div class="field"><label>Party *</label><select id="pay-party"></select></div>
-        <div class="field"><label>Invoice (optional)</label><select id="pay-invoice"></select></div>
-        <div class="field"><label>Amount *</label><input id="pay-amount" type="number" min="0.01" step="0.01" value="0" required></div>
-        <div class="field"><label>Method</label><select id="pay-method"><option value="Cash">Cash</option><option value="UPI">UPI</option><option value="Card">Card</option><option value="Credit">Credit</option></select></div>
-        <div class="field"><label>Note</label><input id="pay-note" type="text" placeholder="Optional"></div>
+        <div class="field">
+          <label>Party Type *</label>
+          <select id="pay-party-type" onchange="updatePayParties()">
+            <option value="customer">Customer (they pay me)</option>
+            <option value="supplier">Supplier (I pay them)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Party *</label>
+          <select id="pay-party" onchange="updatePayOutstanding()"></select>
+        </div>
+        <div class="field">
+          <label>Against Invoice (optional)</label>
+          <select id="pay-invoice"></select>
+          <p class="hint">Pick a bill to mark it paid</p>
+        </div>
+        <div class="field">
+          <label>Amount ₹ *</label>
+          <input id="pay-amount" type="number" min="0.01" step="0.01" value="0" required inputmode="decimal">
+          <p class="hint" id="pay-outstanding"></p>
+        </div>
+        <div class="field">
+          <label>Payment Method</label>
+          <select id="pay-method"><option value="Cash">Cash</option><option value="UPI">UPI</option><option value="Card">Card</option><option value="Credit">Credit / Udhaar</option></select>
+        </div>
+        <div class="field">
+          <label>Note (optional)</label>
+          <input id="pay-note" type="text" placeholder="e.g. Half payment for INV-0003">
+        </div>
       </div>
-      <button type="submit" class="btn btn-primary">💳 Save Payment</button>
+      <button type="submit" class="btn btn-primary btn-lg">💳 Save Payment</button>
     </form>
     <div class="card table-wrap"><table class="data"><thead><tr><th>Date</th><th>Party</th><th>Invoice</th><th>Amount</th><th>Method</th><th>Note</th></tr></thead><tbody>`;
     if (state.payments.length === 0) html += `<tr><td colspan="6"><div class="empty">No payments recorded yet.</div></td></tr>`;
@@ -856,10 +1055,31 @@ function renderParties() {
 }
 
 function renderPaymentForm() {
-  const sel = document.getElementById('pay-party');
-  sel.innerHTML = '<option value="">— Select party —</option>' + state.parties.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  updatePayParties();
   const invSel = document.getElementById('pay-invoice');
   invSel.innerHTML = '<option value="">— No invoice —</option>' + state.invoices.filter(i => i.status !== 'cancelled').map(i => `<option value="${i.id}">${esc(i.invoiceNo)} · ${esc(i.customerName)}</option>`).join('');
+}
+
+function updatePayParties() {
+  const sel = document.getElementById('pay-party');
+  if (!sel) return;
+  const type = document.getElementById('pay-party-type').value;
+  const list = state.parties.filter(p => p.type === type);
+  sel.innerHTML = `<option value="">— Select ${type} —</option>` + list.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  updatePayOutstanding();
+}
+
+function updatePayOutstanding() {
+  const host = document.getElementById('pay-outstanding');
+  if (!host) return;
+  const id = document.getElementById('pay-party').value;
+  const party = state.parties.find(x => x.id === id);
+  if (!party) { host.textContent = 'Pick a party to see their balance'; return; }
+  const type = party.type;
+  const outstanding = partyOutstanding(type, party.id);
+  host.textContent = type === 'customer'
+    ? (outstanding > 0.005 ? `Current khata: ${party.name} owes you ${fmtMoney(outstanding)}` : `${party.name} has no dues`)
+    : (outstanding > 0.005 ? `Current khata: you owe ${party.name} ${fmtMoney(outstanding)}` : `No dues to ${party.name}`);
 }
 
 function handlePaymentSave(e) {
@@ -874,7 +1094,7 @@ function handlePaymentSave(e) {
 /* ---------------- product modal ---------------- */
 function openProductModal(product) {
   editingProductId = product ? product.id : null;
-  document.getElementById('product-modal-title').textContent = product ? '✏️ Edit Product' : '➕ Add Product';
+  document.getElementById('product-modal-title').textContent = product ? '✏️ Edit Product' : '✚ New Product';
   document.getElementById('pm-name').value = product ? product.name : '';
   document.getElementById('pm-sku').value = product ? product.sku : '';
   document.getElementById('pm-category').value = product ? product.category : '';
@@ -882,10 +1102,12 @@ function openProductModal(product) {
   document.getElementById('pm-threshold').value = product ? (product.lowStockThreshold ?? 5) : 5;
   document.getElementById('pm-qty').value = product ? product.quantity : 0;
   document.getElementById('pm-qty-wrap').classList.toggle('hidden', !!product);
-  document.getElementById('pm-part').value = product ? (product.partNumber || '') : '';
-  document.getElementById('pm-brand').value = product ? (product.brand || '') : '';
-  document.getElementById('pm-vehicle').value = product ? (product.vehicleCompatibility || '') : '';
+  const setOptional = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
+  setOptional('pm-part', product ? product.partNumber : '');
+  setOptional('pm-brand', product ? product.brand : '');
+  setOptional('pm-vehicle', product ? product.vehicleCompatibility : '');
   document.getElementById('modal-product').removeAttribute('hidden');
+  setTimeout(function () { document.getElementById('pm-name').focus(); }, 50);
 }
 
 function closeProductModal() { document.getElementById('modal-product').setAttribute('hidden', ''); editingProductId = null; }
@@ -903,26 +1125,100 @@ function deleteProduct(id) {
 function handleProductSave(e) {
   e.preventDefault();
   const name = document.getElementById('pm-name').value.trim();
-  if (!name) { toast('Product name is required', 'error'); return; }
+  if (!name) { toast('Product name is required', 'error'); document.getElementById('pm-name').focus(); return; }
   const sku = document.getElementById('pm-sku').value.trim();
   const category = document.getElementById('pm-category').value.trim();
   const unitPrice = num(document.getElementById('pm-price').value);
   const threshold = Math.max(0, num(document.getElementById('pm-threshold').value));
   const qty = num(document.getElementById('pm-qty').value);
+  const part = (document.getElementById('pm-part') || {}).value ? document.getElementById('pm-part').value.trim() : '';
+  const brand = (document.getElementById('pm-brand') || {}).value ? document.getElementById('pm-brand').value.trim() : '';
+  const vehicle = (document.getElementById('pm-vehicle') || {}).value ? document.getElementById('pm-vehicle').value.trim() : '';
   if (editingProductId) {
     const p = state.products.find(x => x.id === editingProductId);
-    if (p) { p.name = name; p.sku = sku; p.category = category; p.unitPrice = unitPrice; p.lowStockThreshold = threshold; p.quantity = qty; p.partNumber = document.getElementById('pm-part').value.trim(); p.brand = document.getElementById('pm-brand').value.trim(); p.vehicleCompatibility = document.getElementById('pm-vehicle').value.trim(); }
+    if (p) { p.name = name; p.sku = sku; p.category = category; p.unitPrice = unitPrice; p.lowStockThreshold = threshold; p.quantity = qty; p.partNumber = part; p.brand = brand; p.vehicleCompatibility = vehicle; }
     saveState(); render(); closeProductModal(); toast('✅ Product updated');
   } else {
-    addStockEntry({ productId: null, name, sku, category, unitPrice, quantity: qty, source: 'manual', note: 'Product created', partNumber: document.getElementById('pm-part').value.trim(), brand: document.getElementById('pm-brand').value.trim(), vehicleCompatibility: document.getElementById('pm-vehicle').value.trim() });
-    closeProductModal(); toast('✅ Product added');
+    addStockEntry({ productId: null, name, sku, category, unitPrice, quantity: qty, source: 'manual', note: 'Product created', partNumber: part, brand: brand, vehicleCompatibility: vehicle });
+    closeProductModal(); toast('✅ Product added — view it in 📦 Stock');
   }
+}
+
+/* ---------------- party modal ---------------- */
+let editingPartyId = null;
+
+function openPartyModal(party, type) {
+  editingPartyId = party ? party.id : null;
+  document.getElementById('party-modal-title').textContent = party ? '✏️ Edit ' + (party.type === 'customer' ? 'Customer' : 'Supplier') : '✚ Add ' + (type === 'supplier' ? 'Supplier' : 'Customer');
+  document.getElementById('party-type').value = party ? party.type : (type || 'customer');
+  document.getElementById('party-name').value = party ? party.name : '';
+  document.getElementById('party-phone').value = party ? (party.phone || '') : '';
+  document.getElementById('party-gst').value = party ? (party.gst || '') : '';
+  document.getElementById('party-vehreg').value = party ? (party.vehicleReg || '') : '';
+  document.getElementById('party-vehmodel').value = party ? (party.vehicleModel || '') : '';
+  document.getElementById('party-address').value = party ? (party.address || '') : '';
+  document.getElementById('modal-party').removeAttribute('hidden');
+  setTimeout(function () { document.getElementById('party-name').focus(); }, 50);
+}
+
+function closePartyModal() { document.getElementById('modal-party').setAttribute('hidden', ''); editingPartyId = null; }
+
+function handlePartySave(e) {
+  e.preventDefault();
+  const name = document.getElementById('party-name').value.trim();
+  if (!name) { toast('Enter the party name', 'error'); return; }
+  const data = {
+    type: document.getElementById('party-type').value,
+    name: name,
+    phone: document.getElementById('party-phone').value.trim(),
+    gst: document.getElementById('party-gst').value.trim().toUpperCase(),
+    vehicleReg: document.getElementById('party-vehreg').value.trim().toUpperCase(),
+    vehicleModel: document.getElementById('party-vehmodel').value.trim(),
+    address: document.getElementById('party-address').value.trim(),
+  };
+  if (editingPartyId) {
+    const p = state.parties.find(x => x.id === editingPartyId);
+    if (p) Object.assign(p, data);
+    toast('✅ ' + name + ' updated');
+  } else {
+    state.parties.push(Object.assign({ id: uid() }, data));
+    toast('✅ ' + name + ' added to ' + (data.type === 'customer' ? 'customers' : 'suppliers'));
+  }
+  saveState(); closePartyModal(); render();
+}
+
+function deleteParty(id) {
+  const p = state.parties.find(x => x.id === id);
+  if (!p) return;
+  if (!confirm(`Delete "${p.name}"? Their bills & payments stay, but the party record goes.`)) return;
+  state.parties = state.parties.filter(x => x.id !== id);
+  saveState(); render(); toast('Party deleted');
+}
+
+function openPaymentFor(partyId) {
+  const party = state.parties.find(x => x.id === partyId);
+  if (!party) return;
+  partyTab = 'payments';
+  setPage('parties');
+  setTimeout(function () {
+    const typeSel = document.getElementById('pay-party-type');
+    if (!typeSel) return;
+    typeSel.value = party.type;
+    updatePayParties();
+    document.getElementById('pay-party').value = party.id;
+    updatePayOutstanding();
+    const amt = document.getElementById('pay-amount');
+    amt.value = Math.max(0, partyOutstanding(party.type, party.id)).toFixed(2);
+    amt.focus();
+    toast(party.type === 'customer' ? `Receiving from ${party.name}` : `Paying ${party.name}`);
+  }, 60);
 }
 
 /* ---------------- event handlers ---------------- */
 function handleAction(e) {
   const el = e.target.closest('[data-action]');
   if (!el) return;
+  if (el.classList && el.classList.contains('qa-tile')) closeQuickSheet();
   const action = el.dataset.action;
   switch (action) {
     case 'nav-dashboard': setPage('dashboard'); return;
@@ -935,22 +1231,33 @@ function handleAction(e) {
     case 'nav-serials': setPage('serials'); return;
     case 'nav-transactions': setPage('transactions'); return;
     case 'nav-sync': setPage('sync'); return;
+    case 'nav-more': setPage('more'); return;
+    case 'open-quick': openQuickSheet(); return;
+    case 'close-quick': closeQuickSheet(); return;
+    case 'pay-quick': partyTab = 'payments'; setPage('parties'); return;
     case 'login-google': loginGoogle(); return;
     case 'gate-verify': gateVerify(); return;
-    case 'nav-cancel': closeBillModal(); closeProductModal(); closeInvoiceModal(); closePurchaseModal(); return;
+    case 'nav-cancel': closeBillModal(); closeProductModal(); closeInvoiceModal(); closePurchaseModal(); closePartyModal(); return;
     case 'party-tab': partyTab = el.dataset.tab; renderParties(); return;
-    case 'goto-add': if (el.dataset.id) openProductModal(state.products.find(p => p.id === el.dataset.id) || null); else setPage('add'); return;
-    case 'goto-deduct': setPage('deduct'); if (el.dataset.id) deductProductId = el.dataset.id; return;
+    case 'party-add': openPartyModal(null, el.dataset.type); return;
+    case 'party-edit': openPartyModal(state.parties.find(p => p.id === el.dataset.id) || null); return;
+    case 'party-delete': deleteParty(el.dataset.id); return;
+    case 'party-invoices': billingPartyFilter = el.dataset.id; setPage('billing'); return;
+    case 'billing-clear-filter': billingPartyFilter = ''; renderBilling(); return;
+    case 'pay-for': openPaymentFor(el.dataset.id); return;
+    case 'product-new': openProductModal(null); return;
+    case 'goto-add': setPage('add'); return;
+    case 'goto-deduct': if (el.dataset.id) deductProductId = el.dataset.id; setPage('deduct'); return;
     case 'goto-invoice': openInvoiceModal(null); return;
     case 'goto-purchase': openPurchaseModal(); return;
-    case 'goto-serials': setPage('serials'); if (el.dataset.id) serialProductId = el.dataset.id; return;
+    case 'goto-serials': if (el.dataset.id) serialProductId = el.dataset.id; setPage('serials'); return;
     case 'goto-stock': setPage('stock'); return;
     case 'product-edit': openProductModal(state.products.find(p => p.id === el.dataset.id) || null); return;
     case 'product-delete': deleteProduct(el.dataset.id); return;
     case 'invoice-view': openInvoiceModal(state.invoices.find(i => i.id === el.dataset.id) || null); return;
     case 'invoice-print': printInvoice(el.dataset.id); return;
-    case 'invoice-add-line': addInvoiceLine(); return;
-    case 'invoice-line-remove': { const rows = document.querySelectorAll('#invoice-lines .invoice-line-row'); const row = el.closest('.invoice-line-row'); if (row) { const idx = parseInt(row.dataset.line); if (!isNaN(idx)) invoiceLines.splice(idx, 1); if (invoiceLines.length === 0) invoiceLines.push({ productId: '', qty: 1, unitPrice: 0, gstRate: 18, discount: 0 }); renderInvoiceLines(); } return; }
+    case 'invoice-add-line': addInvoiceLine(); computeInvoiceTotals(); return;
+    case 'invoice-line-remove': { const row = el.closest('.invoice-line-row'); if (row) { const idx = parseInt(row.dataset.line); if (!isNaN(idx)) invoiceLines.splice(idx, 1); if (invoiceLines.length === 0) invoiceLines.push({ productId: '', qty: 1, unitPrice: 0, gstRate: 18, discount: 0 }); renderInvoiceLines(); computeInvoiceTotals(); } return; }
     case 'purchase-add-line': purchaseLines.push({ productId: '', qty: 1, unitCost: 0 }); renderPurchaseLines(); computePurchaseTotals(); return;
     case 'cloud-sync-now': doCloudPull().then(function () { renderSync(); }); return;
     case 'cloud-edit-email': cloudAuthStage = 'email'; renderSync(); return;
@@ -988,6 +1295,7 @@ function handleSubmit(e) {
   if (form.id === 'cloud-email-form') { e.preventDefault(); handleCloudEmailSubmit(e); return; }
   if (form.id === 'cloud-code-form') { e.preventDefault(); handleCloudCodeSubmit(e); return; }
   if (form.id === 'payment-form') { e.preventDefault(); handlePaymentSave(e); return; }
+  if (form.id === 'party-form') { e.preventDefault(); handlePartySave(e); return; }
   if (form.id === 'manual-add-form') { e.preventDefault(); handleManualAdd(e); return; }
   if (form.id === 'deduct-form') { e.preventDefault(); handleDeduct(e); return; }
 }
@@ -995,6 +1303,7 @@ function handleSubmit(e) {
 function handleManualAdd(e) {
   e.preventDefault();
   const productId = manualProductId;
+  if (!productId) { toast('👇 First pick a product — or choose "Create a brand-new product"', 'error'); return; }
   let qty = num(document.getElementById('manual-qty').value);
   let name = '', sku = '', category = '', unitPrice = 0;
   if (productId === 'new') {
@@ -1003,16 +1312,20 @@ function handleManualAdd(e) {
     category = document.getElementById('manual-new-category').value.trim();
     unitPrice = num(document.getElementById('manual-new-price').value);
     qty = num(document.getElementById('manual-qty').value);
-    if (!name) { toast('Product name is required for new products', 'error'); return; }
+    if (!name) { toast('Enter the new product name', 'error'); document.getElementById('manual-new-name').focus(); return; }
   }
   const existing = productId && productId !== 'new' ? state.products.find(p => p.id === productId) : null;
-  if (existing) {
-    if (qty <= 0) { toast('Enter a valid quantity', 'error'); return; }
-  }
+  if (!existing && productId !== 'new') { toast('Pick a product first', 'error'); return; }
+  if (qty <= 0) { toast('Enter how many units arrived (e.g. 10)', 'error'); document.getElementById('manual-qty').focus(); return; }
   const res = addStockEntry({ productId: existing ? existing.id : null, name: existing ? existing.name : name, sku: existing ? existing.sku : sku, category: existing ? existing.category : category, unitPrice: existing ? existing.unitPrice : unitPrice, quantity: qty, source: 'manual', note: document.getElementById('manual-note').value.trim() || 'Manual entry' });
-  document.getElementById('manual-qty').value = 1;
-  document.getElementById('manual-note').value = '';
-  if (res.ok) toast(`✅ Added ${qty} units to stock.`);
+  if (res.ok) {
+    document.getElementById('manual-qty').value = 1;
+    document.getElementById('manual-note').value = '';
+    manualProductId = '';
+    document.getElementById('manual-product').value = '';
+    document.getElementById('manual-new-fields').classList.add('hidden');
+    toast(`✅ Added ${qty} units${existing ? ' to ' + existing.name : ''}.`);
+  }
 }
 
 function handleDeduct(e) {
@@ -1344,6 +1657,11 @@ document.addEventListener('click', handleAction);
 document.addEventListener('change', handleChange);
 document.addEventListener('submit', handleSubmit);
 document.addEventListener('input', e => { if (e.target && e.target.id === 'stock-search') { stockQuery = e.target.value; render(); } });
+
+// close quick-create sheet by tapping outside the sheet
+document.getElementById('quick-sheet').addEventListener('click', function (e) {
+  if (e.target === this) closeQuickSheet();
+});
 
 let stockQuery = '';
 

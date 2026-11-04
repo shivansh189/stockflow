@@ -1,5 +1,5 @@
 /* StockFlow service worker — network-first with offline cache fallback. */
-const CACHE = 'stockflow-v7';
+const CACHE = 'stockflow-v8';
 const ASSETS = [
   './',
   './index.html',

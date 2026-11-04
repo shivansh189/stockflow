@@ -2,65 +2,59 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>StockFlow — Inventory & Stock Management</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>StockFlow — Bills, Stock &amp; Khata</title>
   <meta name="description" content="StockFlow — inventory, GST billing, purchase entry, khata and reports for your shop. Works on phone and desktop.">
   <meta name="theme-color" content="#4f46e5">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon-192.png" type="image/png">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=4">
+  <link rel="stylesheet" href="styles.css?v=5">
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar">
-      <div class="brand">📦 StockFlow</div>
-      <nav class="nav">
-        <button class="nav-item active" data-action="nav-dashboard">
-          <span class="nav-icon">📊</span><span>Dashboard</span>
-        </button>
-        <button class="nav-item" data-action="nav-stock">
-          <span class="nav-icon">📋</span><span>Stock</span>
-        </button>
-        <button class="nav-item" data-action="nav-add">
-          <span class="nav-icon">➕</span><span>Add Stock</span>
-        </button>
-        <button class="nav-item" data-action="nav-deduct">
-          <span class="nav-icon">➖</span><span>Deduct Stock</span>
-        </button>
-        <button class="nav-item" data-action="nav-purchases">
-          <span class="nav-icon">📥</span><span>Purchases</span>
-        </button>
-        <button class="nav-item" data-action="nav-billing">
-          <span class="nav-icon">🧾</span><span>Billing / GST Invoice</span>
-        </button>
-        <button class="nav-item" data-action="nav-serials">
-          <span class="nav-icon">🔢</span><span>Serial Numbers</span>
-        </button>
-        <button class="nav-item" data-action="nav-parties">
-          <span class="nav-icon">👥</span><span>Parties</span>
-        </button>
-        <button class="nav-item" data-action="nav-transactions">
-          <span class="nav-icon">🧾</span><span>Transactions</span>
-        </button>
-        <button class="nav-item" data-action="nav-sync">
-          <span class="nav-icon">☁️</span><span>Cloud Save</span>
-        </button>
-      </nav>
-      <div class="sidebar-footer">StockFlow · Inventory made simple</div>
-    </aside>
-
     <main class="main">
       <header class="topbar">
         <div>
-          <h1 id="page-title">Dashboard</h1>
-          <p class="page-sub" id="page-sub">Overview of your inventory</p>
+          <h1 id="page-title">Home</h1>
+          <p class="page-sub" id="page-sub">Your shop at a glance</p>
         </div>
-        <span id="cloud-badge" class="cloud-badge cloud-off" hidden>☁ Cloud off</span>
-        <div id="topbar-actions"></div>
+        <div class="topbar-right">
+          <span id="cloud-badge" class="cloud-badge cloud-off" hidden>☁ Cloud off</span>
+          <div id="topbar-actions"></div>
+        </div>
       </header>
       <section id="page" class="page"></section>
     </main>
+
+    <!-- Floating quick-create button -->
+    <button class="fab" id="fab" data-action="open-quick" aria-label="Quick create">＋</button>
+
+    <!-- Bottom tab bar (mobile-app style) -->
+    <nav class="bottom-nav">
+      <button class="bn-item active" data-action="nav-dashboard"><span class="bn-ic">🏠</span><span>Home</span></button>
+      <button class="bn-item" data-action="nav-stock"><span class="bn-ic">📦</span><span>Stock</span></button>
+      <button class="bn-item" data-action="nav-billing"><span class="bn-ic">🧾</span><span>Bills</span></button>
+      <button class="bn-item" data-action="nav-parties"><span class="bn-ic">👥</span><span>Parties</span></button>
+      <button class="bn-item" data-action="nav-more"><span class="bn-ic">⋯</span><span>More</span></button>
+    </nav>
+  </div>
+
+  <!-- Quick-create bottom sheet -->
+  <div class="sheet-overlay" id="quick-sheet" hidden>
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <h3 style="margin:0 0 12px;font-size:16px">What do you want to do?</h3>
+      <div class="qa-grid">
+        <button class="qa-tile" data-action="goto-invoice"><span class="qa-ic">🧾</span><span>New Invoice</span></button>
+        <button class="qa-tile" data-action="goto-purchase"><span class="qa-ic">📥</span><span>New Purchase</span></button>
+        <button class="qa-tile" data-action="nav-add"><span class="qa-ic">➕</span><span>Add Stock</span></button>
+        <button class="qa-tile" data-action="nav-deduct"><span class="qa-ic">➖</span><span>Deduct Stock</span></button>
+        <button class="qa-tile" data-action="party-add"><span class="qa-ic">👥</span><span>Add Party</span></button>
+        <button class="qa-tile" data-action="pay-quick"><span class="qa-ic">💳</span><span>Payment</span></button>
+      </div>
+      <p class="hint" style="margin:12px 0 0;text-align:center">Tip: Invoices deduct stock automatically · Purchases add stock automatically</p>
+    </div>
   </div>
 
   <!-- Bill Analysis Modal -->
@@ -75,14 +69,17 @@
         <div class="field span-2">
           <label>Product Name</label>
           <input id="bill-product-name" type="text" placeholder="e.g. Steel Rod 12mm">
+          <p class="hint">Name exactly as it should appear in your stock list</p>
         </div>
         <div class="field">
           <label>Quantity</label>
           <input id="bill-quantity" type="number" min="1" step="1" placeholder="0">
+          <p class="hint">How many units arrived?</p>
         </div>
         <div class="field">
           <label>Unit Price (optional)</label>
           <input id="bill-unit-price" type="number" min="0" step="0.01" placeholder="0.00">
+          <p class="hint">Price of one unit, e.g. 85.00</p>
         </div>
         <div class="field span-2">
           <label>Existing Product (optional)</label>
@@ -90,6 +87,7 @@
             <option value="">➕ Create a new product</option>
             <option value="" disabled></option>
           </select>
+          <p class="hint">Pick an existing item to add quantity to it</p>
         </div>
       </div>
       <div id="bill-progress-wrap" class="hidden">
@@ -112,17 +110,98 @@
         <button class="modal-close" id="product-close" data-action="nav-cancel">✕</button>
       </div>
       <form id="product-form">
-        <div class="field"><label>Product Name *</label><input id="pm-name" type="text" required></div>
-        <div class="form-grid">
-          <div class="field"><label>SKU</label><input id="pm-sku" type="text" placeholder="Auto-generate if empty"></div>
-          <div class="field"><label>Category</label><input id="pm-category" type="text" placeholder="e.g. Raw Material"></div>
-          <div class="field"><label>Unit Price</label><input id="pm-price" type="number" min="0" step="0.01"></div>
-          <div class="field"><label>Low Stock Threshold</label><input id="pm-threshold" type="number" min="0" step="1" value="5"></div>
+        <div class="field">
+          <label>Product Name *</label>
+          <input id="pm-name" type="text" placeholder="e.g. Engine Oil 15W-40" required>
+          <p class="hint">What you call this item in your shop</p>
         </div>
-        <div class="field" id="pm-qty-wrap"><label>Opening Quantity</label><input id="pm-qty" type="number" min="0" step="1" value="0"></div>
+        <div class="form-grid">
+          <div class="field">
+            <label>SKU / Code</label>
+            <input id="pm-sku" type="text" placeholder="Auto-generated if empty">
+            <p class="hint">Your own item code (optional)</p>
+          </div>
+          <div class="field">
+            <label>Category</label>
+            <input id="pm-category" type="text" placeholder="e.g. Automotive Fluids">
+            <p class="hint">Used for grouping &amp; search</p>
+          </div>
+          <div class="field">
+            <label>Selling Price ₹</label>
+            <input id="pm-price" type="number" min="0" step="0.01" placeholder="e.g. 320">
+            <p class="hint">Per-unit price you charge customers</p>
+          </div>
+          <div class="field">
+            <label>Low Stock Alert at</label>
+            <input id="pm-threshold" type="number" min="0" step="1" value="5">
+            <p class="hint">Warn me when stock falls to this</p>
+          </div>
+        </div>
+        <div class="field" id="pm-qty-wrap">
+          <label>Opening Quantity</label>
+          <input id="pm-qty" type="number" min="0" step="1" value="0">
+          <p class="hint">How many units you already have</p>
+        </div>
+        <details class="more-fields">
+          <summary>Vehicle part details (optional — for auto spares)</summary>
+          <div class="form-grid">
+            <div class="field"><label>Part Number</label><input id="pm-part" type="text" placeholder="e.g. OEM-OIL-15W40"></div>
+            <div class="field"><label>Brand</label><input id="pm-brand" type="text" placeholder="e.g. Castrol"></div>
+            <div class="field span-2"><label>Vehicle Compatibility</label><input id="pm-vehicle" type="text" placeholder="e.g. 2 Wheeler / 4 Wheeler"></div>
+          </div>
+        </details>
         <div class="modal-actions">
           <button type="button" class="btn" id="product-cancel" data-action="nav-cancel">Cancel</button>
           <button type="submit" class="btn btn-primary">Save Product</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Party (Customer / Supplier) Add / Edit Modal -->
+  <div class="modal-overlay" id="modal-party" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="party-modal-title">Add Party</h2>
+        <button class="modal-close" id="party-close" data-action="nav-cancel">✕</button>
+      </div>
+      <form id="party-form">
+        <div class="field">
+          <label>Type *</label>
+          <select id="party-type">
+            <option value="customer">Customer — you sell / bill them</option>
+            <option value="supplier">Supplier — you buy stock from them</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Name *</label>
+          <input id="party-name" type="text" placeholder="e.g. Ramesh Auto Works" required>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label>Phone</label>
+            <input id="party-phone" type="text" placeholder="e.g. 98765 43210">
+          </div>
+          <div class="field">
+            <label>GSTIN (optional)</label>
+            <input id="party-gst" type="text" placeholder="e.g. 27ABCA1234C1Z5">
+          </div>
+          <div class="field">
+            <label>Vehicle No. (optional)</label>
+            <input id="party-vehreg" type="text" placeholder="e.g. MH12AB1234">
+          </div>
+          <div class="field">
+            <label>Vehicle Model (optional)</label>
+            <input id="party-vehmodel" type="text" placeholder="e.g. Swift Dzire">
+          </div>
+        </div>
+        <div class="field">
+          <label>Address</label>
+          <input id="party-address" type="text" placeholder="e.g. 12, Industrial Estate, Pune">
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn" data-action="nav-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Party</button>
         </div>
       </form>
     </div>
@@ -137,23 +216,22 @@
       </div>
       <form id="invoice-form">
         <div class="form-grid">
-          <div class="field"><label>Invoice No.</label><input id="inv-no" type="text" value="INV-0001"></div>
-          <div class="field"><label>Date</label><input id="inv-date" type="date" value="2026-11-02"></div>
-          <div class="field"><label>Customer *</label><select id="inv-customer"></select></div>
-          <div class="field"><label>Status</label><select id="inv-status"><option value="unpaid">Unpaid</option><option value="paid">Paid</option><option value="cancelled">Cancelled</option></select></div>
-        </div>
-        <h3 class="section-title">Line Items</h3>
-        <div id="invoice-lines">
-          <div class="invoice-line invoice-line-row" data-line="0">
-            <select class="line-product"></select>
-            <input class="line-qty" type="number" min="1" step="1" value="1">
-            <input class="line-price" type="number" min="0" step="0.01" value="0">
-            <select class="line-gst"><option value="0">0%</option><option value="5">5%</option><option value="12">12%</option><option value="18" selected>18%</option><option value="28">28%</option></select>
-            <input class="line-discount" type="number" min="0" step="0.01" value="0">
-            <div class="line-amt">0.00</div>
-            <button type="button" class="btn btn-sm btn-danger line-remove" data-action="invoice-line-remove">✕</button>
+          <div class="field"><label>Invoice No.</label><input id="inv-no" type="text" placeholder="INV-0001"></div>
+          <div class="field"><label>Date</label><input id="inv-date" type="date"></div>
+          <div class="field">
+            <label>Customer (optional)</label>
+            <select id="inv-customer"></select>
+            <p class="hint">Leave empty for a walk-in customer</p>
+          </div>
+          <div class="field">
+            <label>Status</label>
+            <select id="inv-status"><option value="unpaid">Unpaid</option><option value="paid">Paid</option><option value="cancelled">Cancelled</option></select>
+            <p class="hint">Unpaid keeps the amount in customer khata</p>
           </div>
         </div>
+        <h3 class="section-title">Items Sold</h3>
+        <p class="hint" style="margin:-6px 0 10px">Pick a product → price fills in automatically → change quantity</p>
+        <div id="invoice-lines"></div>
         <button type="button" class="btn btn-sm" data-action="invoice-add-line">+ Add Item</button>
         <div class="form-grid" style="margin-top:12px">
           <div class="field"><label>Subtotal</label><input id="inv-subtotal" type="text" value="0.00" readonly></div>
@@ -163,7 +241,7 @@
         </div>
         <div class="modal-actions">
           <button type="button" class="btn" id="invoice-cancel2" data-action="nav-cancel">Cancel</button>
-          <button type="submit" class="btn btn-primary">💾 Save Invoice & Deduct Stock</button>
+          <button type="submit" class="btn btn-primary">💾 Save Invoice &amp; Deduct Stock</button>
         </div>
       </form>
     </div>
@@ -178,28 +256,25 @@
       </div>
       <form id="purchase-form">
         <div class="form-grid">
-          <div class="field"><label>Purchase / Bill No.</label><input id="pur-no" type="text" value="PUR-0001"></div>
+          <div class="field"><label>Purchase / Bill No.</label><input id="pur-no" type="text" placeholder="PUR-0001"></div>
           <div class="field"><label>Date</label><input id="pur-date" type="date"></div>
-          <div class="field"><label>Supplier *</label><select id="pur-supplier"></select></div>
+          <div class="field">
+            <label>Supplier *</label>
+            <select id="pur-supplier"></select>
+            <p class="hint">Who you bought from — add new suppliers in Parties</p>
+          </div>
           <div class="field"><label>Note</label><input id="pur-note" type="text" placeholder="Optional"></div>
         </div>
         <h3 class="section-title">Items Purchased</h3>
-        <div id="purchase-lines">
-          <div class="purchase-line-row purchase-line" data-line="0">
-            <select class="p-line-product"></select>
-            <input class="p-line-qty" type="number" min="1" step="1" value="1">
-            <input class="p-line-cost" type="number" min="0" step="0.01" value="0">
-            <div class="line-amt">0.00</div>
-            <button type="button" class="btn btn-sm btn-danger" data-action="purchase-line-remove">✕</button>
-          </div>
-        </div>
+        <p class="hint" style="margin:-6px 0 10px">Quantity × cost price → stock is added automatically when you save</p>
+        <div id="purchase-lines"></div>
         <button type="button" class="btn btn-sm" data-action="purchase-add-line">+ Add Item</button>
         <div class="form-grid" style="margin-top:12px">
           <div class="field"><label>Total Cost</label><input id="pur-total" type="text" value="0.00" readonly></div>
         </div>
         <div class="modal-actions">
           <button type="button" class="btn" data-action="nav-cancel">Cancel</button>
-          <button type="submit" class="btn btn-primary">📥 Save Purchase & Add Stock</button>
+          <button type="submit" class="btn btn-primary">📥 Save Purchase &amp; Add Stock</button>
         </div>
       </form>
     </div>
@@ -213,7 +288,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=2"></script>
   <script src="cloud.js?v=4"></script>
-  <script src="app.js?v=7"></script>
+  <script src="app.js?v=8"></script>
   <script>
     try {
       if ('serviceWorker' in navigator && location.protocol !== 'file:') {
