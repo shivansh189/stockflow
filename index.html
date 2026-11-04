@@ -9,7 +9,7 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon-192.png" type="image/png">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=7">
+  <link rel="stylesheet" href="styles.css?v=8">
 </head>
 <body>
   <div class="app-shell">
@@ -52,8 +52,10 @@
         <button class="qa-tile" data-action="nav-deduct"><span class="qa-ic">➖</span><span>Deduct Stock</span></button>
         <button class="qa-tile" data-action="party-add"><span class="qa-ic">👥</span><span>Add Party</span></button>
         <button class="qa-tile" data-action="pay-quick"><span class="qa-ic">💳</span><span>Payment</span></button>
+        <button class="qa-tile" data-action="nav-returns"><span class="qa-ic">↩️</span><span>Sales Return</span></button>
+        <button class="qa-tile" data-action="nav-profit"><span class="qa-ic">📈</span><span>Profit</span></button>
       </div>
-      <p class="hint" style="margin:12px 0 0;text-align:center">Tip: Invoices deduct stock automatically · Purchases add stock automatically</p>
+      <p class="hint" style="margin:12px 0 0;text-align:center">Tip: Invoices deduct stock automatically · Returns add stock back · Purchases add stock</p>
     </div>
   </div>
 
@@ -132,6 +134,11 @@
             <p class="hint">Per-unit price you charge customers</p>
           </div>
           <div class="field">
+            <label>Cost Price ₹</label>
+            <input id="pm-cost" type="number" min="0" step="0.01" placeholder="e.g. 250">
+            <p class="hint">What ONE unit costs you — needed for profit</p>
+          </div>
+          <div class="field">
             <label>Low Stock Alert at</label>
             <input id="pm-threshold" type="number" min="0" step="1" value="5">
             <p class="hint">Warn me when stock falls to this</p>
@@ -141,6 +148,14 @@
           <label>Opening Quantity</label>
           <input id="pm-qty" type="number" min="0" step="1" value="0">
           <p class="hint">How many units you already have</p>
+        </div>
+        <div class="field">
+          <label>Barcode (optional)</label>
+          <div style="display:flex;gap:8px">
+            <input id="pm-barcode" type="text" placeholder="Type or 📷 scan the barcode">
+            <button type="button" class="btn btn-sm" data-action="scan-open" data-context="barcode">📷</button>
+          </div>
+          <p class="hint">Lets you pick this item fast by scanning its barcode</p>
         </div>
         <details class="more-fields">
           <summary>Vehicle part details (optional — for auto spares)</summary>
@@ -153,6 +168,68 @@
         <div class="modal-actions">
           <button type="button" class="btn" id="product-cancel" data-action="nav-cancel">Cancel</button>
           <button type="submit" class="btn btn-primary">Save Product</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Barcode Scanner Modal -->
+  <div class="modal-overlay" id="modal-scan" hidden>
+    <div class="modal" style="width:min(480px,94vw)">
+      <div class="modal-header">
+        <h2 id="scan-modal-title">📷 Scan Barcode</h2>
+        <button class="modal-close" data-action="scan-close">✕</button>
+      </div>
+      <p class="hint" id="scan-hint" style="margin:0 0 10px">Point the camera at the product's barcode</p>
+      <div class="scan-video-wrap"><video id="scan-video" playsinline muted></video><div class="scan-frame"></div></div>
+      <p class="muted" id="scan-status" style="text-align:center;font-size:13px;margin:10px 0">Starting camera…</p>
+      <div class="field">
+        <label>No camera? Type the code instead</label>
+        <div style="display:flex;gap:8px">
+          <input id="scan-manual" type="text" placeholder="Barcode / SKU code" inputmode="numeric">
+          <button type="button" class="btn btn-primary" data-action="scan-try">Find</button>
+        </div>
+        <p class="hint">Matches your products' barcode or SKU</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sales Return Modal -->
+  <div class="modal-overlay" id="modal-return" hidden>
+    <div class="modal" style="width:min(760px,94vw)">
+      <div class="modal-header">
+        <h2 id="return-modal-title">↩️ New Sales Return</h2>
+        <button class="modal-close" data-action="nav-cancel">✕</button>
+      </div>
+      <form id="return-form">
+        <div class="form-grid">
+          <div class="field"><label>Return No.</label><input id="ret-no" type="text" placeholder="RET-0001"><p class="hint">Number for your records — prints nowhere needed</p></div>
+          <div class="field"><label>Date</label><input id="ret-date" type="date"><p class="hint">When the customer brought it back</p></div>
+          <div class="field">
+            <label>Customer (optional)</label>
+            <select id="ret-customer" onchange="onReturnCustomerChange()"></select>
+            <p class="hint">Pick one so the refund clears their khata</p>
+          </div>
+          <div class="field">
+            <label>Link Original Bill (optional)</label>
+            <select id="ret-invoice" onchange="onReturnInvoiceChange()"></select>
+            <p class="hint">Pick the bill → items fill automatically</p>
+          </div>
+        </div>
+        <h3 class="section-title">Items Returned</h3>
+        <p class="hint" style="margin:-6px 0 10px">Resellable items go back into stock · Damaged items only get recorded</p>
+        <div id="return-lines"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn btn-sm" data-action="ret-add-line">+ Add Item</button>
+          <button type="button" class="btn btn-sm" data-action="scan-open" data-context="return">📷 Scan item</button>
+        </div>
+        <div class="form-grid" style="margin-top:12px">
+          <div class="field"><label>Total Refund</label><input id="ret-total" type="text" value="0.00" readonly><p class="hint">Money you are giving back to the customer</p></div>
+          <div class="field"><label>Note</label><input id="ret-note" type="text" placeholder="Why was it returned?"><p class="hint">e.g. wrong size, damaged box</p></div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn" data-action="nav-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary">↩️ Save Return &amp; Add Stock</button>
         </div>
       </form>
     </div>
@@ -241,7 +318,10 @@
         <h3 class="section-title">Items Sold</h3>
         <p class="hint" style="margin:-6px 0 10px">Pick a product → price fills in automatically → change quantity</p>
         <div id="invoice-lines"></div>
-        <button type="button" class="btn btn-sm" data-action="invoice-add-line">+ Add Item</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn btn-sm" data-action="invoice-add-line">+ Add Item</button>
+          <button type="button" class="btn btn-sm" data-action="scan-open" data-context="invoice">📷 Scan item</button>
+        </div>
         <div class="form-grid" style="margin-top:12px">
           <div class="field"><label>Subtotal</label><input id="inv-subtotal" type="text" value="0.00" readonly></div>
           <div class="field"><label>GST</label><input id="inv-gst" type="text" value="0.00" readonly></div>
@@ -298,7 +378,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=2"></script>
   <script src="cloud.js?v=4"></script>
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=11"></script>
   <script>
     try {
       if ('serviceWorker' in navigator && location.protocol !== 'file:') {
