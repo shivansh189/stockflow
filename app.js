@@ -4,7 +4,7 @@ const DB_KEY = 'stockflow_db_v1';
 const CURRENCY = '₹';
 const LOW_STOCK_DEFAULT = 5;
 
-const state = { products: [], serials: [], transactions: [], invoices: [], parties: [], payments: [], purchases: [], returns: [] };
+const state = { products: [], serials: [], transactions: [], invoices: [], parties: [], payments: [], purchases: [], returns: [], billFormats: [] };
 let currentPage = 'dashboard';
 let cloudLastSync = null;
 let cloudPushTimer = null;
@@ -26,7 +26,7 @@ const PAGE_TITLES = {
   add: ['Add Stock', 'Record new stock you received'],
   deduct: ['Deduct Stock', 'Remove sold / damaged / lost quantities'],
   purchases: ['Purchases', 'Stock you bought from suppliers'],
-  billing: ['Bills / GST Invoices', 'Invoices you raised — tap a bill to print'],
+  billing: ['Bills (GST & Non-GST)', 'GST bills, non-GST bills & your personal bill format'],
   returns: ['Sales Returns', 'Items customers brought back — refund given, resellable stock comes back'],
   profit: ['📈 Profit Estimate', 'What each item earns you — cost vs selling price'],
   serials: ['Serial Numbers', 'Track individual serial numbers'],
@@ -75,6 +75,8 @@ function loadState() {
       state.payments = d.payments || [];
       state.purchases = d.purchases || [];
       state.returns = d.returns || [];
+      state.billFormats = d.billFormats || [];
+      migrateState();
       return;
     }
   } catch (e) { /* fall through to seed */ }
@@ -87,6 +89,26 @@ function saveState() {
     if (cloudPushTimer) clearTimeout(cloudPushTimer);
     cloudPushTimer = setTimeout(function () { cloudPushTimer = null; doCloudPush(true); }, 1200);
   }
+}
+
+function migrateState() {
+  // older bills had no type — they were all GST invoices
+  state.invoices.forEach(inv => { if (!inv.mode) inv.mode = 'gst'; });
+  // keep exactly one default per bill type
+  const g = state.billFormats.filter(f => f.isDefaultGst);
+  const n = state.billFormats.filter(f => f.isDefaultNg);
+  if (g.length > 1) g.slice(1).forEach(f => { delete f.isDefaultGst; });
+  if (n.length > 1) n.slice(1).forEach(f => { delete f.isDefaultNg; });
+}
+
+function billFormatFor(mode) {
+  const fmts = state.billFormats || [];
+  if (mode === 'nongst') return fmts.find(f => f.isDefaultNg && f.mode !== 'gst') || fmts.find(f => f.mode !== 'gst') || null;
+  return fmts.find(f => f.isDefaultGst && f.mode !== 'nongst') || fmts.find(f => f.mode !== 'nongst') || null;
+}
+
+function billFormatById(id) {
+  return (state.billFormats || []).find(f => f.id === id) || null;
 }
 
 function seedState() {
@@ -124,6 +146,7 @@ function seedState() {
   state.purchases = [
     { id: 'pur1', purchaseNo: 'PUR-0001', supplierId: 's1', supplierName: 'ABC Spares Pvt Ltd', date: new Date(Date.now() - 86400000 * 4).toISOString(), items: [{ productId: 'p-oil', name: 'Engine Oil 15W-40', qty: 4, unitCost: 240 }, { productId: 'p-batt', name: 'Bike Battery 12V', qty: 3, unitCost: 1100 }], total: 4260, note: 'First purchase' },
   ];
+  state.billFormats = [];
 }
 loadState();
 
@@ -203,7 +226,7 @@ function markJustAdded(txId) { justAddedIds.add(txId); if (justAddedIds.size > 8
 function topbarActions(page) {
   let btn = '';
   if (page === 'stock') btn = `<button class="btn btn-primary" data-action="product-new">✚ New Product</button>`;
-  if (page === 'billing') btn = `<button class="btn btn-primary" data-action="goto-invoice">🧾 New Invoice</button>`;
+  if (page === 'billing') btn = pageBtnBilling();
   if (page === 'purchases') btn = `<button class="btn btn-primary" data-action="goto-purchase">📥 New Purchase</button>`;
   return btn;
 }
@@ -388,11 +411,16 @@ function renderAddStock() {
     </form>`;
   } else {
     html += `<div class="card" style="max-width:560px">
-      <h3>Upload a Bill / Invoice Image</h3>
+      <h3>Add Stock from a Supplier Bill 📄</h3>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
+        <div class="muted" style="font-size:13px"><strong style="color:var(--text)">Step 1 —</strong> Take a clear photo of the bill (straight, no shadows, product lines visible)</div>
+        <div class="muted" style="font-size:13px"><strong style="color:var(--text)">Step 2 —</strong> We read it automatically: product name, quantity, price — plus whether it's a GST bill</div>
+        <div class="muted" style="font-size:13px"><strong style="color:var(--text)">Step 3 —</strong> Check the filled fields, fix anything wrong, tap Add</div>
+      </div>
       <div class="dropzone" id="bill-dropzone" data-action="bill-dropzone">
         <div class="dz-icon">🖼️</div>
-        <div><strong>Click to upload</strong> or drag a bill image here</div>
-        <div class="muted" style="font-size:12px;margin-top:6px">JPG / PNG / PDF · Bill should show product name & quantity</div>
+        <div><strong>Tap to upload bill photo</strong> or drop it here</div>
+        <div class="muted" style="font-size:12px;margin-top:6px">JPG / PNG · close-up of the item list works best</div>
       </div>
       <input type="file" id="bill-file" accept="image/*" style="display:none" onchange="billFileSelected(this)">
       <div id="bill-progress-wrap" class="hidden" style="margin-top:14px"><div class="progress"><div id="bill-progress-bar"></div></div><p class="muted" id="bill-progress-text">0%</p></div>
@@ -448,11 +476,16 @@ function openBillModal(parsed) {
   document.getElementById('bill-ocr-text').textContent = parsed.rawText || '';
   const sel = document.getElementById('bill-product-select');
   sel.innerHTML = '<option value="">➕ Create a new product</option>' + state.products.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
-  document.getElementById('bill-status').textContent = '✅ Analysis complete — please verify and confirm:';
+  const det = [];
+  det.push(parsed.hasGst ? '🧾 Detected: <strong>GST bill</strong>' + (parsed.gstin ? ' (GSTIN ' + esc(parsed.gstin) + ' found)' : '') : '📄 Detected: simple / non-GST bill');
+  if (parsed.quantity) det.push('Qty ' + parsed.quantity);
+  if (parsed.unitPrice) det.push('Price ₹' + parsed.unitPrice);
+  document.getElementById('bill-status').innerHTML = `✅ Analysis complete — check these ${det.length - 1 ? '3' : '2'} things and fix anything wrong:<br><span style="font-size:12px">${det.join(' · ')}</span>`;
 }
 
 function parseBillText(text) {
   const cleanLines = text.split(/\r?\n/).map(l => l.replace(/[|*_#]/g, ' ').replace(/\s+/g, ' ').trim()).filter(l => l.length > 1);
+  const joined = cleanLines.join('\n');
   let productName = '';
   let quantity = null;
   let unitPrice = null;
@@ -460,28 +493,56 @@ function parseBillText(text) {
   const qtyPatterns = [
     /(?:^|\s)qty\.?\s*[:=]?\s*(\d+(?:\.\d+)?)/i,
     /(?:^|\s)quantity\.?\s*[:=]?\s*(\d+(?:\.\d+)?)/i,
-    /(?:^|\s)(\d+(?:\.\d+)?)\s*(?:pcs|pieces|units?|nos|boxes?|packs?|qt|q|qty|units)\b/i,
+    /(?:^|\s)(\d+(?:\.\d+)?)\s*(?:pcs|pieces|units?|nos?|boxes?|packs?|pairs?|pieces)\b/i,
+    /(?:^|\s)(\d{1,4}(?:\.\d+)?)\s*[xX×]\s*(?:₹|Rs\.?|INR|\$)?\s*(\d+(?:[.,]\d+)?)/, // "2 x ₹250" style — qty × price
   ];
+  let qtyPriceFromPair = null;
   for (const line of cleanLines) {
     let found = null;
     for (const re of qtyPatterns) {
       const m = line.match(re);
-      if (m) { found = { value: parseFloat(m[1]), re: re.source }; break; }
+      if (m) { found = { value: parseFloat(m[1]), re: re.source }; if (m[2]) qtyPriceFromPair = parseFloat(m[2].replace(/,/g, '')); break; }
     }
     if (found) { quantity = found.value; qtyLine = line; break; }
   }
-  // product name: first meaningful line that isn't the qty line
-  for (const line of cleanLines) {
+  // product name: the item text sitting on the same line as the quantity
+  // (e.g. "Brake Pad Set 2 x ₹450" → "Brake Pad Set", "Cement Bags qty: 10" → "Cement Bags")
+  let nameFromQty = '';
+  if (qtyLine) {
+    let cut = qtyLine;
+    for (const re of [/(?:^|\s)qty\.?\s*[:=]?\s*(\d+(?:\.\d+)?)/i, /(?:^|\s)quantity\.?\s*[:=]?\s*(\d+(?:\.\d+)?)/i, /(?:^|\s)(\d+(?:\.\d+)?)\s*(?:pcs|pieces|units?|nos?|boxes?|packs?|pairs?)\b/i, /(?:^|\s)(\d{1,4}(?:\.\d+)?)\s*[xX×].*/]) {
+      const m = qtyLine.match(re);
+      if (m) { cut = qtyLine.replace(m[0], ' '); break; }
+    }
+    cut = cut.replace(/₹|[$]/g, '').replace(/\b(Rs\.?|INR)\b/gi, '').replace(/[\d.,\s]+$/, '').trim();
+    if (cut.length > 2 && /[a-z]/i.test(cut)) nameFromQty = cut;
+  }
+  // fallback: first meaningful line that isn't shop header / numbers / labels
+  if (!nameFromQty) for (const line of cleanLines) {
     if (line === qtyLine) continue;
-    if (/^[₹$]?\s*\d/.test(line) || /(?:date|invoice|bill|no|tel|gst|vat|total|subtotal)/i.test(line)) continue;
+    if (/^[₹$]?\s*\d/.test(line) || /(?:date|invoice|bill|tel|phone|mobile|gst|vat|total|subtotal|address|thank|\bpvt\b|\bltd\b|\bllp\b|trading|traders|enterprises)/i.test(line)) continue;
     productName = line.replace(/^(?:[A-Z]{2,4}\s*-\s*)?/, '').trim();
     if (productName.length > 2) break;
   }
-  productName = productName.replace(/₹|[$]/g, '').replace(/\b(Rs\.?|INR)\b/gi, '').replace(/\s{2,}/g, ' ').trim();
+  productName = (nameFromQty || productName).replace(/₹|[$]/g, '').replace(/\b(Rs\.?|INR)\b/gi, '').replace(/\s{2,}/g, ' ').trim();
   if (!productName) productName = 'Unknown Product';
-  const priceM = (text || '').match(/(?:₹|Rs\.?|INR|\$)\s*(\d+(?:[.,]\d+)?)/);
-  if (priceM) unitPrice = parseFloat(priceM[1].replace(/,/g, ''));
-  return { productName, quantity, unitPrice, rawText: text || '' };
+  // price: prefer "total"/"net amount", else qty×price pair, else biggest money number (could be grand total → unit price = total/qty)
+  let totalAmt = null;
+  const totalsText = joined.match(/(?:grand\s+total|net\s+amount|total\s+amount|total)\D{0,10}(?:₹|Rs\.?|INR|\$)?\s*("?[\d,]+\.\d{1,2})/i) || joined.match(/(?:grand\s+total|net\s+amount|total\s+amount|total)\D{0,10}(?:₹|Rs\.?|INR|\$)?\s*"?([\d,]+(?:\.\d{1,2})?)/i);
+  if (totalsText) totalAmt = parseFloat(totalsText[1].replace(/,/g, ''));
+  const moneyNums = (joined.match(/(?:₹|Rs\.?|INR|\$)\s*([\d,]+(?:\.\d{1,2})?)/g) || []).map(s => parseFloat(s.replace(/[^\d.]/g, ''))).filter(n => n > 0);
+  if (qtyPriceFromPair) {
+    unitPrice = qtyPriceFromPair;
+  } else if (moneyNums.length) {
+    const biggest = Math.max.apply(null, moneyNums);
+    if (totalAmt && totalAmt === biggest && quantity && quantity > 1 && biggest % quantity === 0) unitPrice = biggest / quantity;
+    else unitPrice = biggest;
+  }
+  // is this a GST bill?
+  const gstinM = joined.match(/\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3})\b/);
+  const hasGstWords = /\b(cgst|sgst|igst|gst\s*%|gst\s*rate|taxable|hsn|sac)\b/i.test(joined);
+  const hasGst = !!(gstinM || hasGstWords);
+  return { productName, quantity, unitPrice, hasGst, gstin: gstinM ? gstinM[1] : '', rawText: text || '' };
 }
 
 function confirmBillAdd() {
@@ -690,26 +751,45 @@ function renderDeductProducts() {
 
 /* ---------------- billing ---------------- */
 let billingPartyFilter = '';
+let billingTab = 'gst';
 
 function renderBilling() {
-  const list = state.invoices.filter(inv => !billingPartyFilter || inv.customerId === billingPartyFilter);
+  const gstCount = state.invoices.filter(i => (i.mode || 'gst') === 'gst').length;
+  const ngCount = state.invoices.filter(i => i.mode === 'nongst').length;
+  let html = `<div class="tabs">
+    <button class="tab ${billingTab === 'gst' ? 'active' : ''}" data-action="billing-tab" data-tab="gst">🧾 GST Bills (${gstCount})</button>
+    <button class="tab ${billingTab === 'nongst' ? 'active' : ''}" data-action="billing-tab" data-tab="nongst">🧾 Non-GST Bills (${ngCount})</button>
+    <button class="tab ${billingTab === 'formats' ? 'active' : ''}" data-action="billing-tab" data-tab="formats">⚙️ Bill Formats (${(state.billFormats || []).length})</button>
+  </div>`;
+  if (billingTab === 'formats') {
+    html += renderBillFormatsTab();
+    document.getElementById('page').innerHTML = html;
+    setTopbarActions('');
+    return html;
+  }
+  const mode = billingTab;
+  const list = state.invoices.filter(inv => billingPartyFilter ? inv.customerId === billingPartyFilter : (inv.mode || 'gst') === mode);
   const fltName = (state.parties.find(p => p.id === billingPartyFilter) || {}).name;
-  let html = `<div class="toolbar">
-    <div class="muted" style="font-size:13px">${billingPartyFilter ? `Showing bills of <strong>${esc(fltName)}</strong>` : `${state.invoices.length} bills total · ${state.invoices.filter(i => i.status === 'unpaid').length} unpaid`}</div>
+  const unpaidMode = state.invoices.filter(i => (i.mode || 'gst') === mode && i.status === 'unpaid').length;
+  const modeLabel = mode === 'gst' ? 'GST Bills' : 'Non-GST Bills';
+  html += `<div class="toolbar">
+    <div class="muted" style="font-size:13px">${billingPartyFilter ? `Showing bills of <strong>${esc(fltName)}</strong>` : `${modeLabel}: ${list.length} total · ${unpaidMode} unpaid`}</div>
     <div class="toolbar-right">
       ${billingPartyFilter ? `<button class="btn btn-sm" data-action="billing-clear-filter">✕ Clear filter</button>` : ''}
-      <button class="btn btn-primary" data-action="goto-invoice">🧾 New Invoice</button>
+      <button class="btn btn-sm" data-action="billing-tab" data-tab="formats">⚙️ Format</button>
+      <button class="btn btn-primary" data-action="${mode === 'gst' ? 'goto-invoice-gst' : 'goto-invoice-ng'}">🧾 New ${mode === 'gst' ? 'GST' : 'Non-GST'} Bill</button>
     </div></div>`;
   html += `<div class="cards-list">`;
   if (list.length === 0) {
-    html += `<div class="card"><div class="empty">No bills yet.<br><button class="btn btn-primary" style="margin-top:12px" data-action="goto-invoice">🧾 Create your first invoice</button></div></div>`;
+    html += `<div class="card"><div class="empty">${mode === 'gst' ? 'No GST bills yet.' : 'No Non-GST bills yet.'}<br><button class="btn btn-primary" style="margin-top:12px" data-action="${mode === 'gst' ? 'goto-invoice-gst' : 'goto-invoice-ng'}">🧾 Create your first ${mode === 'gst' ? 'GST' : 'Non-GST'} bill</button>${(state.billFormats || []).length === 0 ? `<br><span class="muted" style="font-size:12px">Tip: add your shop name & address in <button class="btn-link" data-action="billing-tab" data-tab="formats" style="padding:0">Bill Formats</button> so bills print with your details</span>` : ''}</div></div>`;
   }
   list.forEach(inv => {
     const stCls = inv.status === 'paid' ? 'badge-ok' : inv.status === 'unpaid' ? 'badge-low' : 'badge-neutral';
+    const modeBadge = (inv.mode || 'gst') === 'gst' ? '<span class="badge badge-neutral">GST</span> ' : '<span class="badge badge-info">No GST</span> ';
     html += `<div class="card party-card">
       <div class="party-head">
         <div>
-          <div class="strong">${esc(inv.customerName)}</div>
+          <div class="strong">${esc(inv.customerName)} ${modeBadge}</div>
           <div class="muted" style="font-size:12px"><span class="mono">${esc(inv.invoiceNo)}</span> · ${inv.items ? inv.items.length : 0} items · ${fmtDate(inv.date)}</div>
         </div>
         <div style="text-align:right">
@@ -725,30 +805,134 @@ function renderBilling() {
   });
   html += `</div>`;
   document.getElementById('page').innerHTML = html;
-  setTopbarActions('');
+  setTopbarActions(pageBtnBilling());
   return html;
+}
+
+function pageBtnBilling() {
+  return `<button class="btn btn-primary" data-action="${billingTab === 'nongst' ? 'goto-invoice-ng' : 'goto-invoice-gst'}">🧾 New ${billingTab === 'nongst' ? 'Non-GST' : 'GST'} Bill</button>`;
+}
+
+/* -------- bill formats (personal bill templates) -------- */
+let editingFormatId = null;
+
+function renderBillFormatsTab() {
+  const fmts = state.billFormats || [];
+  let html = `<div class="toolbar">
+    <div class="muted" style="font-size:13px">Your personal bill format — shop name, address, GSTIN & footer printed on every bill</div>
+    <div class="toolbar-right"><button class="btn btn-primary" data-action="format-new">✚ New Bill Format</button></div></div>`;
+  if (fmts.length === 0) {
+    html += `<div class="card"><div class="empty">No personal bill formats yet.<br><span class="muted" style="font-size:13px">A format puts your shop details on every printed bill — <strong>one for GST bills, one for Non-GST bills</strong><br>(or one format for both).</span><br><button class="btn btn-primary" style="margin-top:12px" data-action="format-new">✚ Create your first bill format</button></div></div>`;
+    return html;
+  }
+  html += `<div class="cards-list">`;
+  fmts.forEach(f => {
+    const modeBadge = f.mode === 'gst' ? '<span class="badge badge-neutral">GST</span>' : f.mode === 'nongst' ? '<span class="badge badge-info">Non-GST</span>' : '<span class="badge">GST + Non-GST</span>';
+    const defBadge = f.isDefaultGst && f.mode !== 'nongst' ? '<span class="badge badge-ok">Default for GST</span> ' : '';
+    const defBadgeNg = f.isDefaultNg && f.mode !== 'gst' ? '<span class="badge badge-ok">Default for Non-GST</span> ' : '';
+    html += `<div class="card party-card">
+      <div class="party-head">
+        <div>
+          <div class="strong">${esc(f.name)} ${modeBadge} ${defBadge}${defBadgeNg}</div>
+          <div class="muted" style="font-size:12px">${esc(f.shopName || 'Shop name not set')}${f.gstin && f.mode !== 'nongst' ? ' · GSTIN ' + esc(f.gstin) : ''}${f.prefix ? ' · Bill no. starts with ' + esc(f.prefix) : ''}</div>
+        </div>
+      </div>
+      <div class="row-actions" style="margin-top:10px">
+        <button class="btn btn-sm" data-action="format-edit" data-id="${f.id}">✏️ Edit</button>
+        ${f.mode !== 'nongst' && !f.isDefaultGst ? `<button class="btn btn-sm" data-action="format-default" data-id="${f.id}" data-mode="gst">★ Make default for GST</button>` : ''}
+        ${f.mode !== 'gst' && !f.isDefaultNg ? `<button class="btn btn-sm" data-action="format-default" data-id="${f.id}" data-mode="nongst">★ Make default for Non-GST</button>` : ''}
+        <button class="btn btn-sm btn-danger" data-action="format-delete" data-id="${f.id}">🗑 Delete</button>
+      </div>
+    </div>`;
+  });
+  html += `</div>`;
+  return html;
+}
+
+function openBillFormatModal(f) {
+  editingFormatId = f ? f.id : null;
+  document.getElementById('bf-title').textContent = f ? '⚙️ Edit Bill Format' : '⚙️ New Bill Format';
+  document.getElementById('fmt-name').value = f ? (f.name || '') : '';
+  document.getElementById('fmt-mode').value = f ? (f.mode || 'both') : 'both';
+  document.getElementById('fmt-shop').value = f ? (f.shopName || '') : '';
+  document.getElementById('fmt-address').value = f ? (f.address || '') : '';
+  document.getElementById('fmt-phone').value = f ? (f.phone || '') : '';
+  document.getElementById('fmt-gstin').value = f ? (f.gstin || '') : '';
+  document.getElementById('fmt-gstrate').value = f ? (f.defaultGst || '') : '';
+  document.getElementById('fmt-prefix').value = f ? (f.prefix || '') : '';
+  document.getElementById('fmt-footer').value = f ? (f.footer || '') : '';
+  document.getElementById('fmt-def-gst').checked = !!(f && f.isDefaultGst);
+  document.getElementById('fmt-def-ng').checked = !!(f && f.isDefaultNg);
+  document.getElementById('modal-billformat').removeAttribute('hidden');
+}
+
+function closeBillFormatModal() {
+  document.getElementById('modal-billformat').setAttribute('hidden', '');
+  editingFormatId = null;
+}
+
+function handleBillFormatSave(e) {
+  e.preventDefault();
+  const name = document.getElementById('fmt-name').value.trim();
+  if (!name) { toast('Give the format a name, e.g. "Main GST format"', 'error'); return; }
+  const f = {
+    id: editingFormatId || 'fmt-' + uid(),
+    name,
+    mode: document.getElementById('fmt-mode').value || 'both',
+    shopName: document.getElementById('fmt-shop').value.trim(),
+    address: document.getElementById('fmt-address').value.trim(),
+    phone: document.getElementById('fmt-phone').value.trim(),
+    gstin: document.getElementById('fmt-gstin').value.trim().toUpperCase(),
+    defaultGst: num(document.getElementById('fmt-gstrate').value),
+    prefix: document.getElementById('fmt-prefix').value.trim(),
+    footer: document.getElementById('fmt-footer').value.trim(),
+    isDefaultGst: document.getElementById('fmt-def-gst').checked,
+    isDefaultNg: document.getElementById('fmt-def-ng').checked,
+  };
+  // only one default per bill type
+  if (f.isDefaultGst) (state.billFormats || []).forEach(x => { if (x.id !== f.id) delete x.isDefaultGst; });
+  if (f.isDefaultNg) (state.billFormats || []).forEach(x => { if (x.id !== f.id) delete x.isDefaultNg; });
+  const idx = (state.billFormats || []).findIndex(x => x.id === f.id);
+  if (idx >= 0) state.billFormats[idx] = f; else state.billFormats.unshift(f);
+  migrateState();
+  saveState();
+  closeBillFormatModal();
+  billingTab = 'formats';
+  render();
+  showSuccess('✅ Bill Format Saved!', `${f.name} — bills will now print with your shop details`, 'billing');
 }
 
 function printInvoice(id) {
   const inv = state.invoices.find(i => i.id === id);
   if (!inv) return;
+  const mode = inv.mode || 'gst';
+  const fmt = billFormatById(inv.formatId) || billFormatFor(mode);
+  const isGst = mode === 'gst';
   const lines = inv.items || [];
+  const shopName = (fmt && fmt.shopName) ? esc(fmt.shopName) : 'StockFlow';
+  const shopLines = [];
+  if (fmt && fmt.address) shopLines.push(esc(fmt.address));
+  if (fmt && fmt.phone) shopLines.push('📞 ' + esc(fmt.phone));
+  if (isGst && fmt && fmt.gstin) shopLines.push('GSTIN: ' + esc(fmt.gstin));
+  const footer = (fmt && fmt.footer) ? esc(fmt.footer) : 'Thank you for your business!';
+  const billTitle = isGst ? 'GST Invoice / Bill' : 'Bill / Memo (No GST)';
   let html = `<div style="font-family:Arial,sans-serif;padding:20px;color:#000">
-    <h2 style="margin:0">StockFlow</h2>
-    <div style="margin-bottom:10px">GST Invoice / Bill</div>
+    <h2 style="margin:0">${shopName}</h2>
+    ${shopLines.length ? `<div style="font-size:12px;line-height:1.5;margin:2px 0 8px">${shopLines.join('<br>')}</div>` : ''}
+    <div style="margin-bottom:10px;font-weight:600">${billTitle}</div>
     <div style="display:flex;justify-content:space-between">
-      <div><strong>Invoice No:</strong> ${esc(inv.invoiceNo)}</div>
+      <div><strong>Bill No:</strong> ${esc(inv.invoiceNo)}</div>
       <div><strong>Date:</strong> ${fmtDate(inv.date)}</div>
     </div>
     <div style="margin:12px 0"><strong>Customer:</strong> ${esc(inv.customerName)}</div>
     <table style="width:100%;border-collapse:collapse;margin-top:8px">
-      <tr style="background:#eee"><th style="border:1px solid #999;padding:4px">Product</th><th style="border:1px solid #999;padding:4px">Qty</th><th style="border:1px solid #999;padding:4px">Rate</th><th style="border:1px solid #999;padding:4px">GST</th><th style="border:1px solid #999;padding:4px">Amount</th></tr>
-      ${lines.map(l => `<tr><td style="border:1px solid #999;padding:4px">${esc(l.name)}</td><td style="border:1px solid #999;padding:4px">${l.qty}</td><td style="border:1px solid #999;padding:4px">${fmtMoney(l.unitPrice)}</td><td style="border:1px solid #999;padding:4px">${l.gstRate}%</td><td style="border:1px solid #999;padding:4px">${fmtMoney(l.qty * l.unitPrice - (l.discount||0))}</td></tr>`).join('')}
+      <tr style="background:#eee"><th style="border:1px solid #999;padding:4px">Product</th><th style="border:1px solid #999;padding:4px">Qty</th><th style="border:1px solid #999;padding:4px">Rate</th>${isGst ? '<th style="border:1px solid #999;padding:4px">GST</th>' : ''}<th style="border:1px solid #999;padding:4px">Amount</th></tr>
+      ${lines.map(l => `<tr><td style="border:1px solid #999;padding:4px">${esc(l.name)}</td><td style="border:1px solid #999;padding:4px">${l.qty}</td><td style="border:1px solid #999;padding:4px">${fmtMoney(l.unitPrice)}</td>${isGst ? `<td style="border:1px solid #999;padding:4px">${l.gstRate}%</td>` : ''}<td style="border:1px solid #999;padding:4px">${fmtMoney(l.qty * l.unitPrice - (l.discount||0))}</td></tr>`).join('')}
     </table>
     <div style="margin-top:10px;text-align:right">
-      <div>Subtotal: ${fmtMoney(inv.subtotal)} &nbsp; GST: ${fmtMoney(inv.gst)} &nbsp; Discount: ${fmtMoney(inv.discountTotal)} &nbsp; <strong>Total: ${fmtMoney(inv.total)}</strong></div>
+      <div>Subtotal: ${fmtMoney(inv.subtotal)} &nbsp; ${isGst ? 'GST: ' + fmtMoney(inv.gst) + ' &nbsp; ' : ''}Discount: ${fmtMoney(inv.discountTotal)} &nbsp; <strong>Total: ${fmtMoney(inv.total)}</strong></div>
     </div>
-    <div style="margin-top:20px">Thank you for your business!</div>
+    <div style="margin-top:20px">${footer}${fmt && fmt.phone ? '<div style="font-size:11px;margin-top:6px">For queries contact: ' + esc(fmt.phone) + '</div>' : ''}</div>
   </div>`;
   document.getElementById('print-area').innerHTML = html;
   document.getElementById('print-area').classList.remove('hidden');
@@ -756,31 +940,59 @@ function printInvoice(id) {
   document.getElementById('print-area').classList.add('hidden');
 }
 
-function openInvoiceModal(invoice) {
+function openInvoiceModal(invoice, forceMode) {
   editingProductId = invoice ? invoice.id : null;
-  document.getElementById('invoice-modal-title').textContent = invoice ? '🧾 ' + invoice.invoiceNo : '🧾 New GST Invoice';
-  document.getElementById('inv-no').value = invoice ? invoice.invoiceNo : ('INV-' + (state.invoices.length + 1));
+  invoiceMode = (invoice ? (invoice.mode || 'gst') : (forceMode || 'gst'));
+  const modeLbl = invoiceMode === 'gst' ? 'GST Bill' : 'Non-GST Bill';
+  document.getElementById('invoice-modal-title').textContent = invoice ? '🧾 ' + invoice.invoiceNo : '🧾 New ' + modeLbl;
+  document.getElementById('inv-gstfield-wrap').hidden = invoiceMode !== 'gst';
+  document.getElementById('inv-subtitle').textContent = invoiceMode === 'gst' ? 'GST bill — GST % per item, tax shown separately' : 'Non-GST bill — no tax column, total = rate × qty (minus discount)';
+  document.getElementById('invoice-save-btn').textContent = invoice ? '💾 Save Changes' : '💾 Save Bill & Deduct Stock';
+  // bill number suggestion
+  const fmt = invoice ? billFormatById(invoice.formatId) : null;
+  const defFmt = billFormatFor(invoiceMode) || fmt;
+  const nextNo = invoice ? invoice.invoiceNo : suggestBillNo(invoiceMode, defFmt);
+  document.getElementById('inv-no').value = nextNo;
   document.getElementById('inv-date').value = invoice ? (invoice.date || '').slice(0, 10) : new Date().toISOString().slice(0, 10);
   const custSel = document.getElementById('inv-customer');
   custSel.innerHTML = '<option value="">Walk-in Customer</option>' + state.parties.filter(p => p.type === 'customer').map(p => `<option value="${p.id}" ${invoice && invoice.customerId === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
   document.getElementById('inv-status').value = invoice ? (invoice.status || 'unpaid') : 'unpaid';
-  invoiceLines = (invoice && invoice.items && invoice.items.length) ? invoice.items.map(i => ({ productId: i.productId || '', qty: i.qty || 0, unitPrice: i.unitPrice || 0, gstRate: i.gstRate || 18, discount: i.discount || 0 })) : [ { productId: '', qty: 1, unitPrice: 0, gstRate: 18, discount: 0 } ];
+  // format picker
+  const fmtSel = document.getElementById('inv-format-wrap');
+  const fmtOpts = (state.billFormats || []).filter(f => invoiceMode === 'gst' ? f.mode !== 'nongst' : f.mode !== 'gst');
+  fmtSel.hidden = fmtOpts.length === 0;
+  if (fmtOpts.length) {
+    const sel = document.getElementById('inv-format');
+    const activeId = invoice ? (invoice.formatId || '') : ((defFmt && defFmt.id) || '');
+    sel.innerHTML = '<option value="">No format — plain bill</option>' + fmtOpts.map(f => `<option value="${f.id}" ${f.id === activeId ? 'selected' : ''}>${esc(f.name)}</option>`).join('');
+  }
+  invoiceLines = (invoice && invoice.items && invoice.items.length) ? invoice.items.map(i => ({ productId: i.productId || '', qty: i.qty || 0, unitPrice: i.unitPrice || 0, gstRate: invoiceMode === 'gst' ? (i.gstRate || 18) : 0, discount: i.discount || 0 })) : [ { productId: '', qty: 1, unitPrice: 0, gstRate: invoiceMode === 'gst' ? (defFmt && defFmt.defaultGst ? defFmt.defaultGst : 18) : 0, discount: 0 } ];
   renderInvoiceLines();
   computeInvoiceTotals();
   document.getElementById('modal-invoice').removeAttribute('hidden');
 }
 
+function suggestBillNo(mode, fmt) {
+  // use the format's prefix only when the format is exclusive to this bill type,
+  // otherwise keep GST-/NG- prefixes separate so numbers don't collide
+  const prefix = (fmt && fmt.mode === mode && fmt.prefix) ? fmt.prefix : (mode === 'gst' ? 'GST-' : 'NG-');
+  const n = state.invoices.filter(i => (i.mode || 'gst') === mode).length + 1;
+  return prefix + String(n).padStart(4, '0');
+}
+
 function closeInvoiceModal() { document.getElementById('modal-invoice').setAttribute('hidden', ''); editingProductId = null; }
 
 let invoiceLines = [ { productId: '', qty: 1, unitPrice: 0, gstRate: 18, discount: 0 } ];
+let invoiceMode = 'gst';
 let partyTab = 'customers';
 
-function addInvoiceLine() { invoiceLines.push({ productId: '', qty: 1, unitPrice: 0, gstRate: 18, discount: 0 }); renderInvoiceLines(); }
+function addInvoiceLine() { invoiceLines.push({ productId: '', qty: 1, unitPrice: 0, gstRate: invoiceMode === 'gst' ? 18 : 0, discount: 0 }); renderInvoiceLines(); }
 
 function renderInvoiceLines() {
   const host = document.getElementById('invoice-lines');
   host.innerHTML = '';
   invoiceLines.forEach((it, i) => {
+    const gstCell = invoiceMode === 'gst' ? `<div class="il-cell"><label>GST %</label><select class="line-gst">${[0, 5, 12, 18, 28].map(g => `<option value="${g}" ${(it.gstRate || 18) === g ? 'selected' : ''}>${g}%</option>`).join('')}</select></div>` : '';
     const row = document.createElement('div');
     row.className = 'invoice-line invoice-line-row';
     row.dataset.line = i;
@@ -788,7 +1000,7 @@ function renderInvoiceLines() {
       <div class="il-cell il-product"><label>Product</label><select class="line-product"><option value="">Select product…</option>${state.products.map(p => `<option value="${p.id}" ${p.id === it.productId ? 'selected' : ''}>${esc(p.name)}${p.unitPrice ? ' · ' + fmtMoney(p.unitPrice) : ''}</option>`).join('')}</select></div>
       <div class="il-cell"><label>Qty</label><input class="line-qty" type="number" min="1" step="1" value="${it.qty || 1}" inputmode="numeric" placeholder="1"></div>
       <div class="il-cell"><label>Rate ₹</label><input class="line-price" type="number" min="0" step="0.01" value="${it.unitPrice || 0}" inputmode="decimal" placeholder="0.00"></div>
-      <div class="il-cell"><label>GST %</label><select class="line-gst">${[0, 5, 12, 18, 28].map(g => `<option value="${g}" ${(it.gstRate || 18) === g ? 'selected' : ''}>${g}%</option>`).join('')}</select></div>
+      ${gstCell}
       <div class="il-cell"><label>Disc ₹</label><input class="line-discount" type="number" min="0" step="0.01" value="${it.discount || 0}" inputmode="decimal" placeholder="0"></div>
       <div class="il-cell"><label>Amount</label><div class="line-amt">0.00</div></div>
       <div class="il-cell il-del"><label>&nbsp;</label><button type="button" class="btn btn-sm btn-danger line-remove" data-action="invoice-line-remove" title="Remove this item">✕</button></div>`;
@@ -826,7 +1038,8 @@ function syncInvoiceLines() {
     l.productId = row.querySelector('.line-product').value;
     l.qty = num(row.querySelector('.line-qty').value);
     l.unitPrice = num(row.querySelector('.line-price').value);
-    l.gstRate = num(row.querySelector('.line-gst').value);
+    const gstEl = row.querySelector('.line-gst');
+    l.gstRate = invoiceMode === 'gst' && gstEl ? num(gstEl.value) : 0;
     l.discount = num(row.querySelector('.line-discount').value);
   });
 }
@@ -849,13 +1062,16 @@ function computeInvoiceTotals() {
 
 function handleInvoiceSave(e) {
   e.preventDefault();
-  const lines = invoiceLines.map(l => ({ productId: l.productId, qty: num(l.qty), unitPrice: num(l.unitPrice), gstRate: num(l.gstRate), discount: num(l.discount) })).filter(l => l.productId);
-  if (lines.length === 0) { toast('Add at least one line item to the invoice', 'error'); return; }
+  const lines = invoiceLines.map(l => ({ productId: l.productId, qty: num(l.qty), unitPrice: num(l.unitPrice), gstRate: invoiceMode === 'gst' ? num(l.gstRate) : 0, discount: num(l.discount) })).filter(l => l.productId);
+  if (lines.length === 0) { toast('Add at least one line item to the bill', 'error'); return; }
   const { subtotal, gst, discountTotal, total } = computeInvoiceTotals();
   const customer = state.parties.find(p => p.id === (document.getElementById('inv-customer').value || '')) || null;
+  const formatId = document.getElementById('inv-format') ? (document.getElementById('inv-format').value || '') : '';
   const invoice = {
     id: editingProductId || 'inv-' + uid(),
-    invoiceNo: document.getElementById('inv-no').value.trim() || ('INV-' + (state.invoices.length + 1)),
+    mode: invoiceMode,
+    formatId,
+    invoiceNo: document.getElementById('inv-no').value.trim() || suggestBillNo(invoiceMode, billFormatById(formatId)),
     customerId: customer ? customer.id : null,
     customerName: customer ? customer.name : 'Walk-in Customer',
     date: new Date(document.getElementById('inv-date').value || new Date().toISOString().slice(0, 10)).toISOString(),
@@ -863,8 +1079,14 @@ function handleInvoiceSave(e) {
     subtotal, gst, discountTotal, total,
     status: document.getElementById('inv-status').value || 'unpaid',
   };
-  state.invoices.unshift(invoice);
-  if (invoice.status !== 'cancelled') {
+  const wasEdit = !!editingProductId;
+  if (wasEdit) {
+    const ix = state.invoices.findIndex(x => x.id === invoice.id);
+    if (ix >= 0) state.invoices[ix] = invoice; else state.invoices.unshift(invoice);
+  } else {
+    state.invoices.unshift(invoice);
+  }
+  if (!wasEdit && invoice.status !== 'cancelled') {
     lines.forEach(l => {
       const p = state.products.find(x => x.id === l.productId);
       if (p && l.qty > 0) {
@@ -874,7 +1096,7 @@ function handleInvoiceSave(e) {
     });
   }
   saveState(); render(); closeInvoiceModal();
-  showSuccess('✅ Invoice Created!', `${invoice.invoiceNo} · ${fmtMoney(invoice.total)} · stock deducted automatically`, 'billing');
+  showSuccess('✅ ' + (invoiceMode === 'gst' ? 'GST Bill' : 'Non-GST Bill') + ' Saved!', `${invoice.invoiceNo} · ${fmtMoney(invoice.total)}${!wasEdit && invoice.status !== 'cancelled' ? ' · stock deducted automatically' : wasEdit ? ' · updated' : ''}`, 'billing');
 }
 
 /* ---------------- purchases (purchase entry) ---------------- */
@@ -1737,7 +1959,7 @@ function handleAction(e) {
     case 'pay-quick': partyTab = 'payments'; setPage('parties'); return;
     case 'login-google': loginGoogle(); return;
     case 'gate-verify': gateVerify(); return;
-    case 'nav-cancel': closeBillModal(); closeProductModal(); closeInvoiceModal(); closePurchaseModal(); closePartyModal(); closeReturnModal(); return;
+    case 'nav-cancel': closeBillModal(); closeProductModal(); closeInvoiceModal(); closePurchaseModal(); closePartyModal(); closeReturnModal(); closeBillFormatModal(); return;
     case 'party-tab': partyTab = el.dataset.tab; renderParties(); return;
     case 'party-add': openPartyModal(null, el.dataset.type); return;
     case 'party-quick-customer': openPartyModal(null, 'customer'); return;
@@ -1746,6 +1968,24 @@ function handleAction(e) {
     case 'party-delete': deleteParty(el.dataset.id); return;
     case 'party-invoices': billingPartyFilter = el.dataset.id; setPage('billing'); return;
     case 'billing-clear-filter': billingPartyFilter = ''; renderBilling(); return;
+    case 'billing-tab': billingTab = el.dataset.tab; billingPartyFilter = ''; renderBilling(); return;
+    case 'format-new': openBillFormatModal(null); return;
+    case 'format-edit': openBillFormatModal(state.billFormats.find(f => f.id === el.dataset.id) || null); return;
+    case 'format-delete': {
+      const f = state.billFormats.find(x => x.id === el.dataset.id);
+      confirmDialog('Delete bill format "' + (f ? f.name : '') + '"? Old bills will print with the default plain layout.', function () {
+        state.billFormats = state.billFormats.filter(x => x.id !== el.dataset.id);
+        saveState(); render(); toast('🗑 Bill format deleted');
+      });
+      return;
+    }
+    case 'format-default': {
+      const f = state.billFormats.find(x => x.id === el.dataset.id);
+      if (!f) return;
+      if (el.dataset.mode === 'nongst') { (state.billFormats || []).forEach(x => { if (x.id !== f.id) delete x.isDefaultNg; }); f.isDefaultNg = true; }
+      else { (state.billFormats || []).forEach(x => { if (x.id !== f.id) delete x.isDefaultGst; }); f.isDefaultGst = true; }
+      saveState(); render(); toast('★ Default format updated'); return;
+    }
     case 'pay-for': openPaymentFor(el.dataset.id); return;
     case 'nav-returns': setPage('returns'); return;
     case 'nav-profit': setPage('profit'); return;
@@ -1758,7 +1998,9 @@ function handleAction(e) {
     case 'product-new': openProductModal(null); return;
     case 'goto-add': setPage('add'); return;
     case 'goto-deduct': if (el.dataset.id) deductProductId = el.dataset.id; setPage('deduct'); return;
-    case 'goto-invoice': openInvoiceModal(null); return;
+    case 'goto-invoice': openInvoiceModal(null, 'gst'); return;
+    case 'goto-invoice-gst': openInvoiceModal(null, 'gst'); return;
+    case 'goto-invoice-ng': openInvoiceModal(null, 'nongst'); return;
     case 'goto-purchase': openPurchaseModal(); return;
     case 'goto-serials': if (el.dataset.id) serialProductId = el.dataset.id; setPage('serials'); return;
     case 'goto-stock': setPage('stock'); return;
@@ -1801,6 +2043,7 @@ function handleSubmit(e) {
   if (form.id === 'gate-email-form') { e.preventDefault(); gateEmailSubmit(e); return; }
   if (form.id === 'product-form') { e.preventDefault(); handleProductSave(e); return; }
   if (form.id === 'invoice-form') { e.preventDefault(); handleInvoiceSave(e); return; }
+  if (form.id === 'billformat-form') { e.preventDefault(); handleBillFormatSave(e); return; }
   if (form.id === 'purchase-form') { e.preventDefault(); handlePurchaseSave(e); return; }
   if (form.id === 'return-form') { e.preventDefault(); handleReturnSave(e); return; }
   if (form.id === 'cloud-email-form') { e.preventDefault(); handleCloudEmailSubmit(e); return; }

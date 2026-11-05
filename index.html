@@ -9,7 +9,7 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon-192.png" type="image/png">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=8">
+  <link rel="stylesheet" href="styles.css?v=9">
 </head>
 <body>
   <div class="app-shell">
@@ -292,10 +292,11 @@
         <button class="modal-close" id="invoice-close" data-action="nav-cancel">✕</button>
       </div>
       <form id="invoice-form">
+        <div id="inv-subtitle" class="hint" style="margin:0 0 10px"></div>
         <div class="form-grid">
           <div class="field">
-            <label>Invoice No.</label>
-            <input id="inv-no" type="text" placeholder="INV-0001">
+            <label>Bill No.</label>
+            <input id="inv-no" type="text" placeholder="GST-0001">
             <p class="hint">Bill number — prints on the bill</p>
           </div>
           <div class="field">
@@ -314,6 +315,11 @@
             <select id="inv-status"><option value="unpaid">Unpaid</option><option value="paid">Paid</option><option value="cancelled">Cancelled</option></select>
             <p class="hint">Unpaid → goes to customer khata</p>
           </div>
+          <div class="field" id="inv-format-wrap" hidden>
+            <label>Bill Print Format</label>
+            <select id="inv-format"></select>
+            <p class="hint">Your shop details from Bill Formats are printed on the bill</p>
+          </div>
         </div>
         <h3 class="section-title">Items Sold</h3>
         <p class="hint" style="margin:-6px 0 10px">Pick a product → price fills in automatically → change quantity</p>
@@ -324,20 +330,88 @@
         </div>
         <div class="form-grid" style="margin-top:12px">
           <div class="field"><label>Subtotal</label><input id="inv-subtotal" type="text" value="0.00" readonly></div>
-          <div class="field"><label>GST</label><input id="inv-gst" type="text" value="0.00" readonly></div>
+          <div class="field" id="inv-gstfield-wrap"><label>GST</label><input id="inv-gst" type="text" value="0.00" readonly></div>
           <div class="field"><label>Discount</label><input id="inv-discount" type="text" value="0.00" readonly></div>
           <div class="field"><label>Total</label><input id="inv-total" type="text" value="0.00" readonly></div>
         </div>
         <div class="modal-actions">
           <button type="button" class="btn" id="invoice-cancel2" data-action="nav-cancel">Cancel</button>
-          <button type="submit" class="btn btn-primary">💾 Save Invoice &amp; Deduct Stock</button>
+          <button type="submit" class="btn btn-primary" id="invoice-save-btn">💾 Save Bill &amp; Deduct Stock</button>
         </div>
       </form>
     </div>
   </div>
 
-  <!-- Purchase Modal -->
-  <div class="modal-overlay" id="modal-purchase" hidden>
+  <!-- Bill Format Modal -->
+  <div class="modal-overlay" id="modal-billformat" hidden>
+    <div class="modal" style="width:min(680px,94vw)">
+      <div class="modal-header">
+        <h2 id="bf-title">⚙️ New Bill Format</h2>
+        <button class="modal-close" data-action="nav-cancel">✕</button>
+      </div>
+      <form id="billformat-form">
+        <p class="hint" style="margin:0 0 10px">Whatever you write here prints at the top of every bill — shop name, address, phone & GSTIN. Keep one format for GST bills and (optionally) a different one for Non-GST bills.</p>
+        <div class="form-grid">
+          <div class="field">
+            <label>Format Name *</label>
+            <input id="fmt-name" type="text" placeholder='e.g. "Main GST format"'>
+            <p class="hint">Just for you to recognise it</p>
+          </div>
+          <div class="field">
+            <label>Use this format for</label>
+            <select id="fmt-mode"><option value="both">GST & Non-GST bills (both)</option><option value="gst">GST bills only</option><option value="nongst">Non-GST bills only</option></select>
+          </div>
+          <div class="field">
+            <label>Shop / Business Name</label>
+            <input id="fmt-shop" type="text" placeholder="e.g. Sharma Auto Spares">
+            <p class="hint">Prints as the big heading on the bill</p>
+          </div>
+          <div class="field">
+            <label>Phone</label>
+            <input id="fmt-phone" type="text" inputmode="tel" placeholder="e.g. 98765 43210">
+          </div>
+          <div class="field" style="grid-column:1/-1">
+            <label>Address</label>
+            <input id="fmt-address" type="text" placeholder="e.g. 12, Main Market Road, Bhopal">
+          </div>
+          <div class="field">
+            <label>GSTIN (for GST bills)</label>
+            <input id="fmt-gstin" type="text" placeholder="e.g. 27ABCDE1234F1Z5" style="text-transform:uppercase">
+            <p class="hint">Your GST number — left empty for non-GST</p>
+          </div>
+          <div class="field">
+            <label>Default GST %</label>
+            <select id="fmt-gstrate"><option value="">Use normal (18%)</option><option value="0">0%</option><option value="5">5%</option><option value="12">12%</option><option value="18">18%</option><option value="28">28%</option></select>
+            <p class="hint">Pre-fills GST % on new bill lines</p>
+          </div>
+          <div class="field">
+            <label>Bill Number Prefix</label>
+            <input id="fmt-prefix" type="text" placeholder="e.g. GST- or NG-">
+            <p class="hint">New bills start with this + number</p>
+          </div>
+          <div class="field">
+            <label>Footer Note</label>
+            <input id="fmt-footer" type="text" placeholder="e.g. Thank you! No exchange without bill.">
+            <p class="hint">Prints at the bottom of the bill</p>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label style="display:flex;gap:8px;align-items:center"><input id="fmt-def-gst" type="checkbox"> ★ Default for GST bills</label>
+          </div>
+          <div class="field">
+            <label style="display:flex;gap:8px;align-items:center"><input id="fmt-def-ng" type="checkbox"> ★ Default for Non-GST bills</label>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn" data-action="nav-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary">💾 Save Format</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Purchase Modal -->  <div class="modal-overlay" id="modal-purchase" hidden>
     <div class="modal" style="width:min(760px,94vw)">
       <div class="modal-header">
         <h2 id="purchase-modal-title">📥 New Purchase Entry</h2>
@@ -378,7 +452,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=2"></script>
   <script src="cloud.js?v=4"></script>
-  <script src="app.js?v=11"></script>
+  <script src="app.js?v=12"></script>
   <script>
     try {
       if ('serviceWorker' in navigator && location.protocol !== 'file:') {
