@@ -476,15 +476,17 @@ async function runBillAnalysis(file) {
   try {
     let text = '';
     let rows = null;
+    let rowsBox = null;
     if (file.type && file.type.indexOf('image/') === 0) {
       billMeta.kind = 'image';
       setBillStatus('🖨️ Reading the bill image (running text recognition)…');
-      text = await ocrToText(await fileToPx(file), setBillProgress);
+      const o = await ocrToRows(file, setBillProgress);
+      text = o.text; rowsBox = o.rows;
     } else if (ext === 'pdf' || file.type === 'application/pdf') {
       billMeta.kind = 'pdf';
       setBillStatus('📑 Reading PDF…');
       const res = await pdfBillText(file, setBillProgress);
-      text = res;
+      text = res.text; rowsBox = res.rows;
     } else if (ext === 'csv' || ext === 'txt' || ext === 'tsv') {
       billMeta.kind = 'spreadsheet';
       rows = parseCsvRows(await file.text());
@@ -507,7 +509,8 @@ async function runBillAnalysis(file) {
     } else {
       setBillProgress(85, 'Finding products…');
       billMeta.rawText = text;
-      const items = parseBillItems(text);
+      let items = (rowsBox && rowsBox.length) ? parseBillRows(rowsBox) : [];
+      if (!items.length) items = parseBillItems(text);
       finishBillAnalysis(items, billMeta.kind === 'image' ? 'image' : 'pdf');
     }
   } catch (err) {
@@ -518,20 +521,77 @@ async function runBillAnalysis(file) {
   bill.busy = false;
 }
 
-function fileToPx(file) { return file; } /* tesseract accepts the File directly */
+/* OCR with word positions — lines become rows of {x, s} so we can read columns properly */
+async function prepImage(src) {
+  try {
+    let bmp;
+    if (src instanceof Blob) bmp = await createImageBitmap(src);
+    else if (src && src.getContext) return src;          // already a canvas
+    else {
+      bmp = await new Promise((res, rej) => {
+        const img = new Image();
+        img.onload = () => res(img); img.onerror = rej;
+        img.src = URL.createObjectURL(src);
+      });
+    }
+    const w = bmp.width, h = bmp.height;
+    if (!w || !h) return src;
+    let scale = 1;
+    if (w < 1000) scale = Math.min(2.2, 1300 / w);       // small/zoomed-out photo → enlarge
+    else if (w > 2000) scale = 1600 / w;                 // huge → shrink for speed
+    const c = document.createElement('canvas');
+    c.width = Math.round(w * scale); c.height = Math.round(h * scale);
+    const x = c.getContext('2d');
+    x.drawImage(bmp, 0, 0, c.width, c.height);
+    // grayscale + gentle contrast so shaded photos read better
+    const d = x.getImageData(0, 0, c.width, c.height);
+    const p = d.data;
+    for (let i = 0; i < p.length; i += 4) {
+      let g = 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2];
+      g = (g - 128) * 1.25 + 128;
+      g = g < 0 ? 0 : g > 255 ? 255 : g;
+      p[i] = p[i + 1] = p[i + 2] = g;
+    }
+    x.putImageData(d, 0, 0);
+    return c;
+  } catch (e) { return src; }
+}
 
-async function ocrToText(file, onProgress) {
+function clusterWordsToRows(words) {
+  const sorted = words.slice().sort((a, b) => a.y - b.y);
+  const rows = [];
+  let cur = [], base = null;
+  const tol = 11;
+  for (const w of sorted) {
+    if (base === null || w.y - base <= tol) { cur.push(w); if (base === null) base = w.y; }
+    else { rows.push(cur); cur = [w]; base = w.y; }
+  }
+  if (cur.length) rows.push(cur);
+  return rows.map(r => r.sort((a, b) => a.x - b.x)).map(r => r.filter(w => w.s)).filter(r => r.length > 0);
+}
+
+async function ocrToRows(src, onProgress) {
   await loadScriptOnce('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js', 'Tesseract');
+  const pre = await prepImage(src);
   const worker = await window.Tesseract.createWorker('eng', 1, {
     logger: m => {
       if (m.status === 'recognizing text' && onProgress) onProgress(10 + (m.progress || 0) * 70, 'Reading text — ' + Math.round((m.progress || 0) * 100) + '%');
       else if (onProgress) onProgress(10, m.status === 'loading tesseract core' ? 'Loading engine…' : 'Preparing — ' + m.status);
     },
   });
-  const { data } = await worker.recognize(file);
+  const { data } = await worker.recognize(pre);
   await worker.terminate();
-  return data.text || '';
+  const words = [];
+  (data.blocks || []).forEach(b => (b.paragraphs || []).forEach(pa => (pa.lines || []).forEach(l => (l.words || []).forEach(w => {
+    if (w && w.text && w.text.trim()) words.push({ x: w.bbox ? (w.bbox.x0 + w.bbox.x1) / 2 : 0, y: w.bbox ? (w.bbox.y0 + w.bbox.y1) / 2 : 0, s: w.text.trim() });
+  }))));
+  if (words.length >= 3) return { text: data.text || '', rows: clusterWordsToRows(words) };
+  // fallback: no word boxes → plain text lines with x unknown
+  const text = data.text || '';
+  return { text, rows: text.split(/\r?\n/).map(l => l.trim().split(/\s+/).map(s => ({ x: 0, s }))).map(r => r.filter(w => w.s)).filter(r => r.length) };
 }
+
+async function ocrToText(file, onProgress) { return (await ocrToRows(file, onProgress)).text; }
 
 /* PDF: try the embedded text layer first (instant, accurate); if it's a scanned PDF, rasterize pages and OCR them */
 async function pdfBillText(file, onProgress) {
@@ -540,14 +600,16 @@ async function pdfBillText(file, onProgress) {
   const buf = await file.arrayBuffer();
   const pdf = await pdfjs.getDocument({ data: buf }).promise;
   let text = '';
+  let rows = [];
   let needsOcr = [];
   const maxPages = Math.min(pdf.numPages, 5);
   for (let i = 1; i <= maxPages; i++) {
     if (onProgress) onProgress(5 + (i / maxPages) * 40, 'Page ' + i + ' / ' + maxPages + '…');
     const page = await pdf.getPage(i);
     const tc = await page.getTextContent();
-    const pageText = textContentToRows(tc);
-    if (pageText.replace(/\s/g, '').length > 40) text += '\n' + pageText;
+    const pageRows = textContentToRows(tc);
+    const pageText = pageRows.map(r => r.map(w => w.s).join(' ')).join('\n');
+    if (pageText.replace(/\s/g, '').length > 40) { text += '\n' + pageText; rows = rows.concat(pageRows); }
     else needsOcr.push(page);
   }
   for (const page of needsOcr.slice(0, 4)) {
@@ -556,19 +618,27 @@ async function pdfBillText(file, onProgress) {
     const canvas = document.createElement('canvas');
     canvas.width = viewport.width; canvas.height = viewport.height;
     await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-    text += '\n' + await ocrToText(canvas, onProgress);
+    const o = await ocrToRows(canvas, onProgress);
+    text += '\n' + o.text;
+    rows = rows.concat(o.rows);
   }
-  return text;
+  return { text, rows };
 }
 
-/* rebuild visual rows from pdf.js text items (same y = same line, sorted by x) */
+/* rebuild visual rows from pdf.js text items (same y = same row of {x, s} words) */
 function textContentToRows(tc) {
-  const rows = {};
+  const buckets = {};
   (tc.items || []).forEach(it => {
     const y = Math.round((it.transform[5] || 0) / 3) * 3;
-    (rows[y] = rows[y] || []).push({ x: it.transform[4] || 0, s: it.str || '' });
+    (buckets[y] = buckets[y] || []).push({ x: it.transform[4] || 0, s: (it.str || '').trim() });
   });
-  return Object.keys(rows).sort((a, b) => b - a).map(y => rows[y].sort((a, b) => a.x - b.x).map(t => t.s).join(' ')).filter(r => r.trim()).join('\n');
+  return Object.keys(buckets).sort((a, b) => b - a)
+    .map(y => buckets[y].filter(w => w.s).sort((a, b) => a.x - b.x))
+    .filter(r => r.length);
+}
+
+function parsePdfWords(text) {
+  return String(text).split(/\r?\n/).map(l => l.trim().split(/\s+/).map(s => ({ x: 0, s }))).map(r => r.filter(w => w.s)).filter(r => r.length);
 }
 
 function parseCsvRows(txt) {
@@ -592,52 +662,224 @@ function parseCsvRows(txt) {
 
 /* map a spreadsheet (header row + data rows) into stock items */
 function mapSheetRows(rows) {
-  const words = {
-    name: ['item', 'product', 'name', 'description', 'particular', 'goods', 'spare', 'stock item', 'material'],
-    qty: ['qty', 'quantity', 'nos', 'count', 'pcs', 'units'],
-    price: ['rate', 'price', 'selling', 'sale', 'mrp', 'unit price'],
+  const KW = {
+    name: ['item', 'product', 'name', 'description', 'particular', 'goods', 'spare', 'material', 'article'],
+    qty: ['qty', 'quantity', 'nos', 'count', 'pcs', 'units', 'stock'],
+    price: ['rate', 'price', 'selling', 'sale', 'mrp', 'unit price', 'per unit'],
     cost: ['cost', 'purchase', 'buy', 'cp'],
     category: ['category', 'type', 'group', 'class'],
     sku: ['sku', 'code', 'part', 'p/n', 'partno'],
     brand: ['brand', 'company', 'make', 'manufacturer'],
     barcode: ['barcode', 'bar code', 'ean', 'upc'],
   };
-  const hdrIdx = rows.findIndex(r => {
-    const cells = r.map(c => String(c).toLowerCase().trim());
-    const matched = cells.filter(c => words.name.some(w => c === w || c.indexOf(w) >= 0) || words.qty.some(w => c === w) || words.price.some(w => c === w));
-    return matched.length >= 2 && cells.some(c => words.name.some(w => c.indexOf(w) >= 0)) && !rows[rows.indexOf(r) + 1] ? false : matched.length >= 2;
-  });
-  let header = null, start = 1;
-  if (hdrIdx >= 0) { header = rows[hdrIdx].map(c => String(c).toLowerCase().trim()); start = hdrIdx + 1; }
-  const colOf = (list) => header ? header.findIndex(c => list.some(w => c === w || c.indexOf(w) >= 0)) : -1;
-  const col = header ? {
-    name: colOf(words.name), qty: colOf(words.qty), price: colOf(words.price), cost: colOf(words.cost),
-    category: colOf(words.category), sku: colOf(words.sku), brand: colOf(words.brand), barcode: colOf(words.barcode),
-  } : { name: 0, qty: 1, price: 2 };
+  const isDateStr = s => /^\d{1,2}[\/.\-]\d{1,2}([\/.\-]\d{2,4})?$/.test(String(s).trim());
+  const parseNum = v => {
+    const s = String(v == null ? '' : v).replace(/(rs\.?|inr)/gi, '').replace(/[₹₨$,]/g, '').trim();
+    if (!s || isDateStr(s)) return 0;
+    const m = s.match(/^(\d+(?:\.\d+)?)/);            // "10 PCS" → 10
+    return m ? parseFloat(m[1]) : 0;
+  };
+  // header row: first row with >= 2 weighty keyword hits
+  let hdrIdx = -1, header = null;
+  for (let i = 0; i < Math.min(rows.length, 12); i++) {
+    const cells = rows[i].map(c => String(c == null ? '' : c).toLowerCase().trim());
+    let hits = 0, hasName = false;
+    cells.forEach(c => {
+      if (!c) return;
+      Object.keys(KW).forEach(k => { if (KW[k].some(w => c === w || c.indexOf(w) >= 0)) { hits++; if (k === 'name') hasName = true; } });
+    });
+    if (hits >= 2 && hasName) { hdrIdx = i; header = cells; break; }
+  }
+  let col;
+  if (header) {
+    const colOf = list => header.findIndex(c => list.some(w => c && (c === w || c.indexOf(w) >= 0)));
+    col = {
+      name: colOf(KW.name), qty: colOf(KW.qty), price: colOf(KW.price), cost: colOf(KW.cost),
+      category: colOf(KW.category), sku: colOf(KW.sku), brand: colOf(KW.brand), barcode: colOf(KW.barcode),
+    };
+  } else {
+    // no header → infer columns from the data itself: text col = name, int col = qty, other numeric = price
+    const data = rows.filter(r => r.some(c => String(c || '').trim()));
+    const nCol = Math.max.apply(null, data.map(r => r.length));
+    const stats = [];
+    for (let c = 0; c < nCol; c++) {
+      let numeric = 0, smallInt = 0, filled = 0;
+      data.forEach(r => {
+        const v = r[c];
+        if (v == null || String(v).trim() === '') return;
+        filled++;
+        const n = parseNum(v);
+        if (n > 0 && String(v).trim() !== '') { numeric++; if (n === Math.round(n) && n <= 2000) { smallInt++; } }
+      });
+      stats.push({ filled, numeric, smallInt });
+    }
+    let nameC = -1, qtyC = -1, priceC = -1;
+    for (let c = 0; c < nCol; c++) { if (stats[c].filled >= 3 && stats[c].numeric / stats[c].filled < 0.4) { nameC = c; break; } }
+    const intCols = [];
+    for (let c = 0; c < nCol; c++) { if (stats[c].filled >= 3 && stats[c].numeric / stats[c].filled >= 0.7 && stats[c].smallInt / Math.max(1, stats[c].numeric) >= 0.8) intCols.push(c); }
+    if (intCols.length) { qtyC = intCols[0]; if (intCols.length > 1) priceC = intCols.find(c => c !== qtyC) || -1; }
+    col = { name: nameC, qty: qtyC, price: priceC, cost: -1, category: -1, sku: -1, brand: -1, barcode: -1 };
+    if (col.name === -1) col.name = 0;
+  }
+  const start = header ? hdrIdx + 1 : 0;
   const items = [];
   for (let i = start; i < rows.length; i++) {
     const r = rows[i].map(c => String(c == null ? '' : c).trim());
     const name = col.name >= 0 ? r[col.name] : r[0];
-    if (!name || /^#|name$/i.test(name)) continue;
-    const num = (v) => parseFloat(String(v || '').replace(/[₹₨,]/g, '').trim()) || 0;
+    if (!name || !/[a-z]/i.test(name) || isDateStr(name)) continue;
+    if (/^(total|subtotal|grand|amount|bill no|invoice)/i.test(name)) continue;
+    let qty = col.qty >= 0 ? parseNum(r[col.qty]) : 0;
+    if (!qty) qty = 1;
+    if (qty > 100000) qty = 1;                        // a year/date leaked in → don't trust
+    const price = col.price >= 0 ? parseNum(r[col.price]) : 0;
     const it = {
       name,
-      qty: col.qty >= 0 ? num(r[col.qty]) || 1 : (num(r[1]) || 1),
-      price: col.price >= 0 ? num(r[col.price]) : num(r[2]),
-      costPrice: col.cost >= 0 ? num(r[col.cost]) : 0,
+      qty,
+      price,
+      costPrice: col.cost >= 0 ? parseNum(r[col.cost]) : 0,
       category: col.category >= 0 ? r[col.category] : '',
       sku: col.sku >= 0 ? r[col.sku] : '',
       brand: col.brand >= 0 ? r[col.brand] : '',
       barcode: col.barcode >= 0 ? r[col.barcode] : '',
     };
-    if (it.qty <= 0) it.qty = 1;
+    if (!it.price && it.costPrice) it.price = it.costPrice;
     items.push(it);
   }
   return items;
 }
 
-/* ------- multi-item bill parser: pulls EVERY product line out of bill text ------- */
-const BILL_SKIP_RE = /\b(gst\s*invoice|tax\s*invoice|invoice\s*no|bill\s*no|date|gstin|phone|mobile|tel|address|thank|subtotal|sub\s*total|cgst|sgst|igst|grand\s*total|total|round|amount\s*in\s*words|declared|assertion|novelty|hereby|subject|cashier|salesman|customer|bill\s*to|ship\s*to|delivery\s*note|order\s*no|p\.?o\.?\s*no|hsn|sac|discount|refund|paid|balance|due|credit|debit|page|scanned|copy|original)\b/i;
+/* ================= VISUAL-COLUMN BILL PARSER =================
+   Reads rows of positioned words like a human looks at a bill:
+   names on the left, qty in the middle, amount on the right. */
+
+const BILL_SKIP_RE = /\b(gst\s*invoice|tax\s*invoice|invoice|bill\s*no|date|gstin|phone|mobile|tel|address|thank|subtotal|sub\s*total|cgst|sgst|igst|grand\s*total|total|round\s*off|amount\s*in\s*words|declared|assertion|novelty|hereby|subject|cashier|salesman|customer|bill\s*to|ship\s*to|delivery\s*note|order\s*no|p\.?o\.?\s*no|hsn|sac|discount|refund|paid|balance|due|credit|debit|previous\s*balance|carried|page|scanned|copy|original|supervisor|manager|proprietor|verified|checked|goods\s*once|terms|description)\b/i;
+const BILL_UNIT_WORDS = /^(nos?|no\.?|pcs|pieces?|units?|boxes?|packs?|quantities|ltrs?|litres?|liters?|ml|kgs?|gms?|grams?|metres?|meters?|dozen|rolls?|pkts?|bundles?|coil)$/i;
+const BILL_CURR_WORDS = /^(rs\.?|inr|₹|\$)$/i;
+
+/* is this word a plain number? (dates, GST%, serial "1.", GSTIN numbers excluded) */
+function billNumWord(s) {
+  const raw = String(s).trim();
+  if (/^\d{1,3}[.)]$/.test(raw)) return false;                  // list serial "1."
+  if (/^\d{1,2}[\/.\-]\d{1,2}([\/.\-]\d{2,4})?$/.test(raw)) return false; // date 25/10/26
+  if (/^\d{1,3}(\.\d{1,2})?%$/.test(raw)) return false;         // GST 18%
+  if (!/^\d[\d,]*(\.\d{1,2})?$/.test(raw)) return false;
+  const v = parseFloat(raw.replace(/,/g, ''));
+  if (!isFinite(v) || v <= 0) return false;
+  if (raw.replace(/\D/g, '').length > 7) return false;          // phone / huge ids
+  return true;
+}
+
+/* split OCR-glued words: "Rs540" → [Rs|540], "3nos" → [3|nos], "30x" → [30|x], "4.Brass" → [4.|Brass] */
+function billSplitWord(w) {
+  const s = String(w.s);
+  let m = s.match(/^(\d{1,5})\s*[x×]$/i); if (m) return [{ x: w.x, s: m[1] }, { x: w.x + 1, s: 'x' }];
+  m = s.match(/^(\d{1,5})(nos?|no\.?|pcs|pieces?|units?|boxes?|packs?|pairs?|ltrs?|litres?|liters?|ml|kgs?|gms?|grams?|dozen)$/i); if (m) return [{ x: w.x, s: m[1] }, { x: w.x + 1, s: m[2] }];
+  m = s.match(/^(?:₹|\$|rs\.?|inr)(\d[\d,]*(?:\.\d{1,2})?)$/i); if (m) return [{ x: w.x, s: s.slice(0, s.length - m[1].length) }, { x: w.x + 1, s: m[1] }];
+  m = s.match(/^(\d{1,5})\.(?=[A-Za-z])/); if (m) return [{ x: w.x, s: m[1] + '.' }, { x: w.x + 1, s: s.slice(m[1].length + 1) }];
+  return [{ x: w.x, s }];
+}
+
+/* a "floating" number is NOT part of the item name: it sits at a line edge
+   or right next to a currency / unit / x symbol. Interior numbers (Gear Oil
+   90 GL) stay in the name. */
+function billFloatingNum(words, i) {
+  const prev = ((words[i - 1] || {}).s || '').trim();
+  const next = ((words[i + 1] || {}).s || '').trim();
+  if (!next) return true;                                        // last word
+  if (BILL_CURR_WORDS.test(next) || BILL_UNIT_WORDS.test(next.replace(/[.:]$/, ''))) return true;
+  if (/^[x×@]$/i.test(next)) return true;
+  if (BILL_CURR_WORDS.test(prev)) return true;
+  if (i === 0) return true;
+  return false;
+}
+
+function parseBillRows(rows) {
+  const items = [];
+  for (const rawRow of rows) {
+    let words = [];
+    (rawRow || []).filter(w => w && w.s).forEach(w => { words = words.concat(billSplitWord(w)); });
+    if (words.length < 2) continue;
+    const lineText = words.map(w => w.s).join(' ');
+    if (BILL_SKIP_RE.test(lineText)) continue;
+    const numIdx = [];
+    words.forEach((w, i) => { if (billNumWord(w.s) && billFloatingNum(words, i)) numIdx.push(i); });
+    if (!numIdx.length) continue;
+
+    // name = the words that stay behind (not numbers/qty/currency)
+    const nameToks = [];
+    words.forEach((w, i) => {
+      const t = w.s.replace(/^[.\-:–—,()|]+|[.\-:–—,()|]+$/g, '');
+      if (!t || numIdx.indexOf(i) >= 0) return;
+      if (BILL_CURR_WORDS.test(t) || BILL_UNIT_WORDS.test(t) || /^[x×@]$/i.test(t)) return;
+      if (/^(qty|quantity)[:=].*\d/i.test(t)) return;            // "qty:5" glued
+      if (/^\d[\d,]*(?:\.\d+)?$/.test(t) && billFloatingNum(words, i)) return;   // floating number — not part of name
+      if (/^\d[x×]$/i.test(t)) return;                           // "30x" glued stray
+      nameToks.push(t);
+    });
+    let name = nameToks.join(' ').replace(/\s{2,}/g, ' ').trim();
+    if (!/[a-z]/i.test(name) || name.replace(/[^a-z]/gi, '').length < 2) continue;
+
+    const val = i => parseFloat(String(words[i].s).replace(/[^0-9.]/g, ''));
+    let qty = 0, amount = 0;
+    // 1) "Qty 5" / "Qty: 5" keyword right before a number, incl. glued "qty:5"
+    for (const i of numIdx.slice()) {
+      const prev = ((words[i - 1] || {}).s || '').trim();
+      if (/^qty/i.test(prev)) { const pm = prev.match(/qty[^0-9]*(\d+)/i); if (pm) { qty = parseFloat(pm[1]); numIdx.splice(numIdx.indexOf(i), 1); } else if (/^(qty\.?|quantity)[:=]?$/i.test(prev)) { qty = val(i); numIdx.splice(numIdx.indexOf(i), 1); } if (qty) break; }
+    }
+    // 2) "4 x 190" pair — standalone x between numbers, or merged "30x 18"
+    if (!qty) {
+      for (let k = 1; k < words.length - 1; k++) {
+        if (/^[x×]$/i.test(words[k].s)) {
+          const li = k - 1, ri = k + 1;
+          if (billNumWord(words[li].s) && billNumWord(words[ri].s)) {
+            const q = val(li), p = val(ri);
+            if (q > 0 && q < 10000 && p > 0) { qty = q; amount = q * p; numIdx.splice(numIdx.indexOf(li), 1); numIdx.splice(numIdx.indexOf(ri), 1); }
+          }
+          break;
+        }
+        const m = String(words[k].s).match(/^(\d{1,5})[x×]$/i);
+        if (m) {
+          let pi = -1, pv = 0;
+          for (let j = k + 1; j <= Math.min(k + 2, words.length - 1); j++) {
+            if (BILL_CURR_WORDS.test(words[j].s)) continue;
+            if (billNumWord(words[j].s)) { pi = j; pv = val(j); break; }
+          }
+          const q = parseFloat(m[1]);
+          if (pi >= 0 && q > 0 && pv > 0) {
+            qty = q; amount = q * pv;
+            const kix = numIdx.indexOf(k); if (kix >= 0) numIdx.splice(kix, 1);
+            const pix = numIdx.indexOf(pi); if (pix >= 0) numIdx.splice(pix, 1);
+          }
+          break;
+        }
+      }
+    }
+    // 3) "10 nos / 5 pcs / 3 Ltr" — number right before a unit word
+    if (!qty) {
+      for (const i of numIdx.slice()) {
+        const next = ((words[i + 1] || {}).s || '').replace(/[.:]$/, '');
+        if (BILL_UNIT_WORDS.test(next)) { qty = val(i); numIdx.splice(numIdx.indexOf(i), 1); break; }
+      }
+    }
+    // amount = right-most remaining number
+    if (numIdx.length) amount = val(numIdx[numIdx.length - 1]);
+    // still no qty? the left-most plausible integer is the qty
+    if (!qty) {
+      const qCand = numIdx.map(val).filter(v => v === Math.round(v) && v >= 1 && v <= 2000);
+      if (qCand.length) qty = qCand[0];
+    }
+    if (!qty && !amount) continue;
+    if (!qty) qty = 1;
+    if (amount && qty > 1) {
+      const q = Math.round((amount / qty) * 100) / 100;
+      if (q > 0 && q < amount) amount = q;                  // store unit price, not line total
+    } else if (!amount) amount = 0;
+    if (amount >= 10000000) amount = 0;
+    items.push({ name: name.slice(0, 60), qty: qty > 100000 ? 1 : qty, price: amount || 0 });
+    if (items.length >= 40) break;
+  }
+  return items;
+}
 const BILL_QTY_RE = /(?:qty\.?|quantity|pcs|pieces|nos|units|boxes|packs|pairs)\b\.?\s*[:=]?\s*(\d{1,5})(?![\d%])/i;
 const BILL_QTY_REV_RE = /(?:^|\s)(\d{1,5})\s*(?:nos?|pcs|pieces|units?|boxes|packs?|pairs)\b/i;
 const BILL_PAIR_RE = /(?:^|\s)(\d{1,5})\s*[x×]\s*(?:₹|Rs\.?|INR|\$|rs)?\s*([\d,]+(?:\.\d{1,2})?)\b/i;
