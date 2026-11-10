@@ -665,7 +665,7 @@ function mapSheetRows(rows) {
   const KW = {
     name: ['item', 'product', 'name', 'description', 'particular', 'goods', 'spare', 'material', 'article'],
     qty: ['qty', 'quantity', 'nos', 'count', 'pcs', 'units', 'stock'],
-    price: ['rate', 'price', 'selling', 'sale', 'mrp', 'unit price', 'per unit'],
+    price: ['mrp', 'm\\.r\\.p', 'rate', 'price', 'selling', 'sale', 'unit price', 'per unit'],
     cost: ['cost', 'purchase', 'buy', 'cp'],
     category: ['category', 'type', 'group', 'class'],
     sku: ['sku', 'code', 'part', 'p/n', 'partno'],
@@ -678,6 +678,13 @@ function mapSheetRows(rows) {
     if (!s || isDateStr(s)) return 0;
     const m = s.match(/^(\d+(?:\.\d+)?)/);            // "10 PCS" → 10
     return m ? parseFloat(m[1]) : 0;
+  };
+  /* a column that just counts rows (1, 2, 3, …) is a serial column — never a quantity */
+  const isSerialCol = vals => {
+    const nums = vals.filter(v => String(v == null ? '' : v).trim() !== '').map(parseNum).filter(n => !isNaN(n));
+    if (nums.length < 3 || nums[0] < 1 || nums[0] > 2) return false;
+    for (let i = 1; i < nums.length; i++) if (nums[i] !== nums[i - 1] + 1) return false;
+    return true;
   };
   // header row: first row with >= 2 weighty keyword hits
   let hdrIdx = -1, header = null;
@@ -692,34 +699,56 @@ function mapSheetRows(rows) {
   }
   let col;
   if (header) {
-    const colOf = list => header.findIndex(c => list.some(w => c && (c === w || c.indexOf(w) >= 0)));
+    const colOf = list => header.findIndex(c => list.some(w => c && (c === w || (new RegExp(w, 'i')).test(c))));
     col = {
       name: colOf(KW.name), qty: colOf(KW.qty), price: colOf(KW.price), cost: colOf(KW.cost),
       category: colOf(KW.category), sku: colOf(KW.sku), brand: colOf(KW.brand), barcode: colOf(KW.barcode),
     };
+    // sanity: same column can't be both name and qty/price (e.g. tiny header)
+    if (col.name >= 0 && col.qty === col.name) col.qty = -1;
+    if (col.name >= 0 && col.price === col.name) col.price = -1;
   } else {
-    // no header → infer columns from the data itself: text col = name, int col = qty, other numeric = price
+    // no header → infer columns from the data itself
     const data = rows.filter(r => r.some(c => String(c || '').trim()));
     const nCol = Math.max.apply(null, data.map(r => r.length));
     const stats = [];
     for (let c = 0; c < nCol; c++) {
-      let numeric = 0, smallInt = 0, filled = 0;
-      data.forEach(r => {
-        const v = r[c];
+      let numeric = 0, smallInt = 0, filled = 0, sum = 0, decimals = 0;
+      const vals = data.map(r => r[c]);
+      vals.forEach(v => {
         if (v == null || String(v).trim() === '') return;
         filled++;
         const n = parseNum(v);
-        if (n > 0 && String(v).trim() !== '') { numeric++; if (n === Math.round(n) && n <= 2000) { smallInt++; } }
+        if (n > 0) { numeric++; sum += n; if (n === Math.round(n) && n <= 2000) smallInt++; if (String(v).indexOf('.') >= 0) decimals++; }
       });
-      stats.push({ filled, numeric, smallInt });
+      stats.push({ filled, numeric, smallInt, avg: filled ? sum / filled : 0, decimals, vals });
+    }
+    const numericCols = [];
+    for (let c = 0; c < nCol; c++) {
+      if (stats[c].filled >= 2 && stats[c].numeric / stats[c].filled >= 0.8 && !isSerialCol(stats[c].vals)) numericCols.push(c);
     }
     let nameC = -1, qtyC = -1, priceC = -1;
-    for (let c = 0; c < nCol; c++) { if (stats[c].filled >= 3 && stats[c].numeric / stats[c].filled < 0.4) { nameC = c; break; } }
-    const intCols = [];
-    for (let c = 0; c < nCol; c++) { if (stats[c].filled >= 3 && stats[c].numeric / stats[c].filled >= 0.7 && stats[c].smallInt / Math.max(1, stats[c].numeric) >= 0.8) intCols.push(c); }
-    if (intCols.length) { qtyC = intCols[0]; if (intCols.length > 1) priceC = intCols.find(c => c !== qtyC) || -1; }
+    for (let c = 0; c < nCol; c++) {
+      if (stats[c].filled >= 2 && stats[c].numeric / stats[c].filled < 0.4) { nameC = c; break; }
+    }
+    if (numericCols.length >= 2) {
+      const [a, b] = numericCols;
+      const decA = stats[a].decimals > stats[a].numeric / 2, decB = stats[b].decimals > stats[b].numeric / 2;
+      if (decA && !decB) { priceC = a; qtyC = b; }
+      else if (decB && !decA) { priceC = b; qtyC = a; }
+      else if (stats[a].avg !== stats[b].avg) { priceC = stats[a].avg > stats[b].avg ? a : b; qtyC = stats[a].avg > stats[b].avg ? b : a; }
+      else { qtyC = numericCols[numericCols.length - 1]; priceC = numericCols.find(c => c !== qtyC) || -1; } // last col = quantity (S.No | Description | MRP | Qty)
+    } else if (numericCols.length === 1) {
+      const c = numericCols[0];
+      const vals = stats[c].vals.filter(v => String(v).trim() !== '').map(parseNum).filter(n => n > 0);
+      const big = vals.filter(n => n > 500).length > vals.length / 2;
+      if (big) priceC = c; else qtyC = c;
+    }
     col = { name: nameC, qty: qtyC, price: priceC, cost: -1, category: -1, sku: -1, brand: -1, barcode: -1 };
-    if (col.name === -1) col.name = 0;
+    if (col.name === -1) col.name = numericCols.length && (nameC === -1) ? -1 : 0;
+    if (col.name === -1) { // every column numeric? longest-numeric col becomes name? unlikely — bail with col 1 name
+      col.name = 1;
+    }
   }
   const start = header ? hdrIdx + 1 : 0;
   const items = [];
@@ -728,6 +757,7 @@ function mapSheetRows(rows) {
     const name = col.name >= 0 ? r[col.name] : r[0];
     if (!name || !/[a-z]/i.test(name) || isDateStr(name)) continue;
     if (/^(total|subtotal|grand|amount|bill no|invoice)/i.test(name)) continue;
+    if (header && name === header[col.name]) continue;     // repeated header row
     let qty = col.qty >= 0 ? parseNum(r[col.qty]) : 0;
     if (!qty) qty = 1;
     if (qty > 100000) qty = 1;                        // a year/date leaked in → don't trust
