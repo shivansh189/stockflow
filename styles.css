@@ -224,6 +224,12 @@ table.kv td:first-child { color: var(--muted); width: 110px; }
   background: #f8fafc;
 }
 .invoice-line-row { grid-template-columns: minmax(150px, 2fr) 64px 100px 78px 90px 86px 30px; }
+.bill-line-row { grid-template-columns: minmax(150px, 2fr) minmax(130px, 1.2fr) 62px 86px 30px; }
+.bill-line-row .bill-delcell button { min-width: 30px; }
+@media (max-width: 640px) {
+  .bill-line-row { grid-template-columns: minmax(0, 2fr) 62px 82px 30px; }
+  .bill-line-row .bill-namecell { grid-column: 1 / -1; }
+}
 .purchase-line-row { grid-template-columns: minmax(150px, 2fr) 64px 100px 96px 30px; }
 .il-cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .il-cell > label { font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }

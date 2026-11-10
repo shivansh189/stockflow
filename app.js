@@ -371,7 +371,7 @@ function renderStock() {
 function renderAddStock() {
   let html = `<div class="tabs">
     <button class="tab ${addTab === 'manual' ? 'active' : ''}" data-action="add-tab" data-tab="manual">✏️ Manual Add</button>
-    <button class="tab ${addTab === 'bill' ? 'active' : ''}" data-action="add-tab" data-tab="bill">📄 Bill Upload (AI OCR)</button>
+    <button class="tab ${addTab === 'bill' ? 'active' : ''}" data-action="add-tab" data-tab="bill">📄 Bill / Sheet Upload (AI)</button>
   </div>`;
 
   if (addTab === 'manual') {
@@ -410,19 +410,19 @@ function renderAddStock() {
       <button type="submit" class="btn btn-primary btn-lg">➕ Add to Stock</button>
     </form>`;
   } else {
-    html += `<div class="card" style="max-width:560px">
-      <h3>Add Stock from a Supplier Bill 📄</h3>
+    html += `<div class="card" style="max-width:600px">
+      <h3>Add Stock from a Bill or Spreadsheet 📄</h3>
       <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
-        <div class="muted" style="font-size:13px"><strong style="color:var(--text)">Step 1 —</strong> Take a clear photo of the bill (straight, no shadows, product lines visible)</div>
-        <div class="muted" style="font-size:13px"><strong style="color:var(--text)">Step 2 —</strong> We read it automatically: product name, quantity, price — plus whether it's a GST bill</div>
-        <div class="muted" style="font-size:13px"><strong style="color:var(--text)">Step 3 —</strong> Check the filled fields, fix anything wrong, tap Add</div>
+        <div class="muted" style="font-size:13px"><strong style="color:var(--text)">Step 1 —</strong> Upload a bill photo, supplier PDF, or your stock Excel / CSV sheet</div>
+        <div class="muted" style="font-size:13px"><strong style="color:var(--text)">Step 2 —</strong> Every product on it is found automatically — new items get created, existing ones match</div>
+        <div class="muted" style="font-size:13px"><strong style="color:var(--text)">Step 3 —</strong> Check the list, fix quantities, then <strong>Add All</strong></div>
       </div>
       <div class="dropzone" id="bill-dropzone" data-action="bill-dropzone">
         <div class="dz-icon">🖼️</div>
-        <div><strong>Tap to upload bill photo</strong> or drop it here</div>
-        <div class="muted" style="font-size:12px;margin-top:6px">JPG / PNG · close-up of the item list works best</div>
+        <div><strong>Tap to upload</strong> or drop a file here</div>
+        <div class="muted" style="font-size:12px;margin-top:6px">📷 Bill photo · 📑 PDF · 📊 Excel (.xlsx) · 📄 CSV — whole stock lists work too</div>
       </div>
-      <input type="file" id="bill-file" accept="image/*" style="display:none" onchange="billFileSelected(this)">
+      <input type="file" id="bill-file" accept="image/*,.pdf,.csv,.xlsx,.xls,.tsv,.txt" style="display:none" onchange="billFileSelected(this)">
       <div id="bill-progress-wrap" class="hidden" style="margin-top:14px"><div class="progress"><div id="bill-progress-bar"></div></div><p class="muted" id="bill-progress-text">0%</p></div>
       <p class="muted" id="bill-status" style="margin-bottom:0">No bill uploaded yet.</p>
     </div>`;
@@ -434,130 +434,423 @@ function renderAddStock() {
 }
 
 function renderBillModal() {
-  const overlay = document.getElementById('modal-bill');
-  overlay.removeAttribute('hidden');
-  // populate existing product select
-  const sel = document.getElementById('bill-product-select');
-  sel.innerHTML = '<option value="">➕ Create a new product</option>' + state.products.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  renderBillItems();
+  document.getElementById('modal-bill').removeAttribute('hidden');
 }
 
-function closeBillModal() { document.getElementById('modal-bill').setAttribute('hidden', ''); bill.parsed = null; bill.file = null; bill.busy = false; bill.progress = 0; }
+function closeBillModal() { document.getElementById('modal-bill').setAttribute('hidden', ''); bill.busy = false; bill.progress = 0; billItems = []; billMeta = { hasGst: false, gstin: '', rawText: '', kind: '' }; }
 
-function billFileSelected(input) { if (input.files && input.files[0]) runBillOCR(input.files[0]); }
+function billFileSelected(input) { if (input.files && input.files[0]) runBillAnalysis(input.files[0]); }
 
-async function runBillOCR(file) {
-  bill.file = file; bill.progress = 0; bill.busy = true;
-  document.getElementById('bill-status').textContent = '⏳ Analyzing bill image…';
-  document.getElementById('bill-progress-wrap').classList.remove('hidden');
-  document.getElementById('bill-progress-bar').style.width = '0%';
-  document.getElementById('bill-progress-text').textContent = '0%';
-  document.getElementById('bill-ocr-text').textContent = '';
+/* lazy CDN loaders — only fetched when the user actually uploads that file type */
+function loadScriptOnce(url, globalKey) {
+  if (window[globalKey]) return Promise.resolve(window[globalKey]);
+  return new Promise(function (resolve, reject) {
+    const s = document.createElement('script');
+    s.src = url;
+    s.onload = function () { if (window[globalKey]) resolve(window[globalKey]); else reject(new Error(globalKey + ' failed to load')); };
+    s.onerror = function () { reject(new Error('Could not load library (check internet) ' + globalKey)); };
+    document.head.appendChild(s);
+  });
+}
+
+function setBillStatus(html) { const el = document.getElementById('bill-status'); if (el) el.innerHTML = html; }
+
+function setBillProgress(pct, label) {
+  const wrap = document.getElementById('bill-progress-wrap');
+  if (!wrap) return;
+  wrap.classList.remove('hidden');
+  document.getElementById('bill-progress-bar').style.width = Math.max(0, Math.min(100, pct)) + '%';
+  document.getElementById('bill-progress-text').textContent = label || (Math.round(pct) + '%');
+}
+
+/* route the uploaded file by type: image / pdf / csv / excel */
+async function runBillAnalysis(file) {
+  if (!file) return;
+  bill.busy = true;
+  billItems = [];
+  billMeta = { hasGst: false, gstin: '', rawText: '', kind: '' };
   document.getElementById('modal-bill').removeAttribute('hidden');
+  setBillProgress(2, 'Starting…');
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
   try {
-    const worker = await createWorker('eng', 1, {
-      logger: m => { if (m.status === 'recognizing text') { bill.progress = Math.round(m.progress || 0); document.getElementById('bill-progress-bar').style.width = bill.progress + '%'; document.getElementById('bill-progress-text').textContent = bill.progress + '%'; } },
-    });
-    const { data } = await worker.recognize(file);
-    await worker.terminate();
-    bill.parsed = parseBillText(data.text || '');
-    bill.parsed.rawText = data.text || '';
-    openBillModal(bill.parsed);
-    document.getElementById('bill-status').textContent = '✅ Analysis complete — please verify and confirm:';
+    let text = '';
+    let rows = null;
+    if (file.type && file.type.indexOf('image/') === 0) {
+      billMeta.kind = 'image';
+      setBillStatus('🖨️ Reading the bill image (running text recognition)…');
+      text = await ocrToText(await fileToPx(file), setBillProgress);
+    } else if (ext === 'pdf' || file.type === 'application/pdf') {
+      billMeta.kind = 'pdf';
+      setBillStatus('📑 Reading PDF…');
+      const res = await pdfBillText(file, setBillProgress);
+      text = res;
+    } else if (ext === 'csv' || ext === 'txt' || ext === 'tsv') {
+      billMeta.kind = 'spreadsheet';
+      rows = parseCsvRows(await file.text());
+    } else if (ext === 'xlsx' || ext === 'xls') {
+      billMeta.kind = 'spreadsheet';
+      setBillStatus('📊 Reading spreadsheet…');
+      await loadScriptOnce('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js', 'XLSX');
+      const buf = await file.arrayBuffer();
+      const wb = window.XLSX.read(buf, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      rows = window.XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: '' });
+    } else {
+      throw new Error('Unsupported file — use a bill photo, PDF, Excel (xlsx/xls) or CSV');
+    }
+    if (rows !== null) {
+      billMeta.rawText = rows.map(r => r.join(' | ')).join('\n');
+      setBillProgress(80, 'Mapping columns…');
+      const items = mapSheetRows(rows);
+      finishBillAnalysis(items, 'spreadsheet');
+    } else {
+      setBillProgress(85, 'Finding products…');
+      billMeta.rawText = text;
+      const items = parseBillItems(text);
+      finishBillAnalysis(items, billMeta.kind === 'image' ? 'image' : 'pdf');
+    }
   } catch (err) {
-    document.getElementById('bill-status').textContent = '❌ OCR failed: ' + (err && err.message ? err.message : 'unknown error') + ' — you can still enter details manually.';
+    setBillProgress(0);
+    setBillStatus('❌ Could not analyze: ' + (err && err.message ? err.message : 'unknown error') + '<br><span style="font-size:12px">You can still add items manually with the ＋ Add Row button below.</span>');
+    openBillModal([]);
   }
   bill.busy = false;
 }
 
-function openBillModal(parsed) {
-  document.getElementById('bill-product-name').value = parsed.productName || '';
-  document.getElementById('bill-quantity').value = parsed.quantity || '';
-  document.getElementById('bill-unit-price').value = parsed.unitPrice || '';
-  document.getElementById('bill-ocr-text').textContent = parsed.rawText || '';
-  const sel = document.getElementById('bill-product-select');
-  sel.innerHTML = '<option value="">➕ Create a new product</option>' + state.products.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
-  const det = [];
-  det.push(parsed.hasGst ? '🧾 Detected: <strong>GST bill</strong>' + (parsed.gstin ? ' (GSTIN ' + esc(parsed.gstin) + ' found)' : '') : '📄 Detected: simple / non-GST bill');
-  if (parsed.quantity) det.push('Qty ' + parsed.quantity);
-  if (parsed.unitPrice) det.push('Price ₹' + parsed.unitPrice);
-  document.getElementById('bill-status').innerHTML = `✅ Analysis complete — check these ${det.length - 1 ? '3' : '2'} things and fix anything wrong:<br><span style="font-size:12px">${det.join(' · ')}</span>`;
-}
+function fileToPx(file) { return file; } /* tesseract accepts the File directly */
 
-function parseBillText(text) {
-  const cleanLines = text.split(/\r?\n/).map(l => l.replace(/[|*_#]/g, ' ').replace(/\s+/g, ' ').trim()).filter(l => l.length > 1);
-  const joined = cleanLines.join('\n');
-  let productName = '';
-  let quantity = null;
-  let unitPrice = null;
-  let qtyLine = '';
-  const qtyPatterns = [
-    /(?:^|\s)qty\.?\s*[:=]?\s*(\d+(?:\.\d+)?)/i,
-    /(?:^|\s)quantity\.?\s*[:=]?\s*(\d+(?:\.\d+)?)/i,
-    /(?:^|\s)(\d+(?:\.\d+)?)\s*(?:pcs|pieces|units?|nos?|boxes?|packs?|pairs?|pieces)\b/i,
-    /(?:^|\s)(\d{1,4}(?:\.\d+)?)\s*[xX×]\s*(?:₹|Rs\.?|INR|\$)?\s*(\d+(?:[.,]\d+)?)/, // "2 x ₹250" style — qty × price
-  ];
-  let qtyPriceFromPair = null;
-  for (const line of cleanLines) {
-    let found = null;
-    for (const re of qtyPatterns) {
-      const m = line.match(re);
-      if (m) { found = { value: parseFloat(m[1]), re: re.source }; if (m[2]) qtyPriceFromPair = parseFloat(m[2].replace(/,/g, '')); break; }
-    }
-    if (found) { quantity = found.value; qtyLine = line; break; }
-  }
-  // product name: the item text sitting on the same line as the quantity
-  // (e.g. "Brake Pad Set 2 x ₹450" → "Brake Pad Set", "Cement Bags qty: 10" → "Cement Bags")
-  let nameFromQty = '';
-  if (qtyLine) {
-    let cut = qtyLine;
-    for (const re of [/(?:^|\s)qty\.?\s*[:=]?\s*(\d+(?:\.\d+)?)/i, /(?:^|\s)quantity\.?\s*[:=]?\s*(\d+(?:\.\d+)?)/i, /(?:^|\s)(\d+(?:\.\d+)?)\s*(?:pcs|pieces|units?|nos?|boxes?|packs?|pairs?)\b/i, /(?:^|\s)(\d{1,4}(?:\.\d+)?)\s*[xX×].*/]) {
-      const m = qtyLine.match(re);
-      if (m) { cut = qtyLine.replace(m[0], ' '); break; }
-    }
-    cut = cut.replace(/₹|[$]/g, '').replace(/\b(Rs\.?|INR)\b/gi, '').replace(/[\d.,\s]+$/, '').trim();
-    if (cut.length > 2 && /[a-z]/i.test(cut)) nameFromQty = cut;
-  }
-  // fallback: first meaningful line that isn't shop header / numbers / labels
-  if (!nameFromQty) for (const line of cleanLines) {
-    if (line === qtyLine) continue;
-    if (/^[₹$]?\s*\d/.test(line) || /(?:date|invoice|bill|tel|phone|mobile|gst|vat|total|subtotal|address|thank|\bpvt\b|\bltd\b|\bllp\b|trading|traders|enterprises)/i.test(line)) continue;
-    productName = line.replace(/^(?:[A-Z]{2,4}\s*-\s*)?/, '').trim();
-    if (productName.length > 2) break;
-  }
-  productName = (nameFromQty || productName).replace(/₹|[$]/g, '').replace(/\b(Rs\.?|INR)\b/gi, '').replace(/\s{2,}/g, ' ').trim();
-  if (!productName) productName = 'Unknown Product';
-  // price: prefer "total"/"net amount", else qty×price pair, else biggest money number (could be grand total → unit price = total/qty)
-  let totalAmt = null;
-  const totalsText = joined.match(/(?:grand\s+total|net\s+amount|total\s+amount|total)\D{0,10}(?:₹|Rs\.?|INR|\$)?\s*("?[\d,]+\.\d{1,2})/i) || joined.match(/(?:grand\s+total|net\s+amount|total\s+amount|total)\D{0,10}(?:₹|Rs\.?|INR|\$)?\s*"?([\d,]+(?:\.\d{1,2})?)/i);
-  if (totalsText) totalAmt = parseFloat(totalsText[1].replace(/,/g, ''));
-  const moneyNums = (joined.match(/(?:₹|Rs\.?|INR|\$)\s*([\d,]+(?:\.\d{1,2})?)/g) || []).map(s => parseFloat(s.replace(/[^\d.]/g, ''))).filter(n => n > 0);
-  if (qtyPriceFromPair) {
-    unitPrice = qtyPriceFromPair;
-  } else if (moneyNums.length) {
-    const biggest = Math.max.apply(null, moneyNums);
-    if (totalAmt && totalAmt === biggest && quantity && quantity > 1 && biggest % quantity === 0) unitPrice = biggest / quantity;
-    else unitPrice = biggest;
-  }
-  // is this a GST bill?
-  const gstinM = joined.match(/\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3})\b/);
-  const hasGstWords = /\b(cgst|sgst|igst|gst\s*%|gst\s*rate|taxable|hsn|sac)\b/i.test(joined);
-  const hasGst = !!(gstinM || hasGstWords);
-  return { productName, quantity, unitPrice, hasGst, gstin: gstinM ? gstinM[1] : '', rawText: text || '' };
-}
-
-function confirmBillAdd() {
-  const name = document.getElementById('bill-product-name').value.trim();
-  const qty = parseFloat(document.getElementById('bill-quantity').value);
-  const price = parseFloat(document.getElementById('bill-unit-price').value) || 0;
-  const productId = document.getElementById('bill-product-select').value;
-  if (!name || !isFinite(qty) || qty <= 0) { toast('Please enter a product name and a valid quantity before adding.', 'error'); return; }
-  addStockEntry({
-    productId: productId && productId !== '' ? productId : null,
-    name, sku: '', category: '', unitPrice: price, quantity: qty, source: 'bill', note: 'From bill',
+async function ocrToText(file, onProgress) {
+  await loadScriptOnce('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js', 'Tesseract');
+  const worker = await window.Tesseract.createWorker('eng', 1, {
+    logger: m => {
+      if (m.status === 'recognizing text' && onProgress) onProgress(10 + (m.progress || 0) * 70, 'Reading text — ' + Math.round((m.progress || 0) * 100) + '%');
+      else if (onProgress) onProgress(10, m.status === 'loading tesseract core' ? 'Loading engine…' : 'Preparing — ' + m.status);
+    },
   });
+  const { data } = await worker.recognize(file);
+  await worker.terminate();
+  return data.text || '';
+}
+
+/* PDF: try the embedded text layer first (instant, accurate); if it's a scanned PDF, rasterize pages and OCR them */
+async function pdfBillText(file, onProgress) {
+  const pdfjs = await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', 'pdfjsLib');
+  pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjs.getDocument({ data: buf }).promise;
+  let text = '';
+  let needsOcr = [];
+  const maxPages = Math.min(pdf.numPages, 5);
+  for (let i = 1; i <= maxPages; i++) {
+    if (onProgress) onProgress(5 + (i / maxPages) * 40, 'Page ' + i + ' / ' + maxPages + '…');
+    const page = await pdf.getPage(i);
+    const tc = await page.getTextContent();
+    const pageText = textContentToRows(tc);
+    if (pageText.replace(/\s/g, '').length > 40) text += '\n' + pageText;
+    else needsOcr.push(page);
+  }
+  for (const page of needsOcr.slice(0, 4)) {
+    if (onProgress) onProgress(50, 'Scanned page detected — reading it…');
+    const viewport = page.getViewport({ scale: 2 });
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width; canvas.height = viewport.height;
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    text += '\n' + await ocrToText(canvas, onProgress);
+  }
+  return text;
+}
+
+/* rebuild visual rows from pdf.js text items (same y = same line, sorted by x) */
+function textContentToRows(tc) {
+  const rows = {};
+  (tc.items || []).forEach(it => {
+    const y = Math.round((it.transform[5] || 0) / 3) * 3;
+    (rows[y] = rows[y] || []).push({ x: it.transform[4] || 0, s: it.str || '' });
+  });
+  return Object.keys(rows).sort((a, b) => b - a).map(y => rows[y].sort((a, b) => a.x - b.x).map(t => t.s).join(' ')).filter(r => r.trim()).join('\n');
+}
+
+function parseCsvRows(txt) {
+  const rows = [];
+  let cur = [''], inQ = false, row = [];
+  const line = String(txt || '').replace(/\r\n?/g, '\n');
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQ) {
+      if (ch === '"' && line[i + 1] === '"') { cur[0] += '"'; i++; }
+      else if (ch === '"') inQ = false;
+      else cur[0] += ch;
+    } else if (ch === '"') inQ = true;
+    else if (ch === ',' || ch === '\t' || ch === ';') { row.push(cur[0]); cur = ['']; }
+    else if (ch === '\n') { row.push(cur[0]); rows.push(row); row = []; cur = ['']; }
+    else cur[0] += ch;
+  }
+  if (cur[0] !== '' || row.length) { row.push(cur[0]); rows.push(row); }
+  return rows.filter(r => r.some(c => String(c).trim() !== ''));
+}
+
+/* map a spreadsheet (header row + data rows) into stock items */
+function mapSheetRows(rows) {
+  const words = {
+    name: ['item', 'product', 'name', 'description', 'particular', 'goods', 'spare', 'stock item', 'material'],
+    qty: ['qty', 'quantity', 'nos', 'count', 'pcs', 'units'],
+    price: ['rate', 'price', 'selling', 'sale', 'mrp', 'unit price'],
+    cost: ['cost', 'purchase', 'buy', 'cp'],
+    category: ['category', 'type', 'group', 'class'],
+    sku: ['sku', 'code', 'part', 'p/n', 'partno'],
+    brand: ['brand', 'company', 'make', 'manufacturer'],
+    barcode: ['barcode', 'bar code', 'ean', 'upc'],
+  };
+  const hdrIdx = rows.findIndex(r => {
+    const cells = r.map(c => String(c).toLowerCase().trim());
+    const matched = cells.filter(c => words.name.some(w => c === w || c.indexOf(w) >= 0) || words.qty.some(w => c === w) || words.price.some(w => c === w));
+    return matched.length >= 2 && cells.some(c => words.name.some(w => c.indexOf(w) >= 0)) && !rows[rows.indexOf(r) + 1] ? false : matched.length >= 2;
+  });
+  let header = null, start = 1;
+  if (hdrIdx >= 0) { header = rows[hdrIdx].map(c => String(c).toLowerCase().trim()); start = hdrIdx + 1; }
+  const colOf = (list) => header ? header.findIndex(c => list.some(w => c === w || c.indexOf(w) >= 0)) : -1;
+  const col = header ? {
+    name: colOf(words.name), qty: colOf(words.qty), price: colOf(words.price), cost: colOf(words.cost),
+    category: colOf(words.category), sku: colOf(words.sku), brand: colOf(words.brand), barcode: colOf(words.barcode),
+  } : { name: 0, qty: 1, price: 2 };
+  const items = [];
+  for (let i = start; i < rows.length; i++) {
+    const r = rows[i].map(c => String(c == null ? '' : c).trim());
+    const name = col.name >= 0 ? r[col.name] : r[0];
+    if (!name || /^#|name$/i.test(name)) continue;
+    const num = (v) => parseFloat(String(v || '').replace(/[₹₨,]/g, '').trim()) || 0;
+    const it = {
+      name,
+      qty: col.qty >= 0 ? num(r[col.qty]) || 1 : (num(r[1]) || 1),
+      price: col.price >= 0 ? num(r[col.price]) : num(r[2]),
+      costPrice: col.cost >= 0 ? num(r[col.cost]) : 0,
+      category: col.category >= 0 ? r[col.category] : '',
+      sku: col.sku >= 0 ? r[col.sku] : '',
+      brand: col.brand >= 0 ? r[col.brand] : '',
+      barcode: col.barcode >= 0 ? r[col.barcode] : '',
+    };
+    if (it.qty <= 0) it.qty = 1;
+    items.push(it);
+  }
+  return items;
+}
+
+/* ------- multi-item bill parser: pulls EVERY product line out of bill text ------- */
+const BILL_SKIP_RE = /\b(gst\s*invoice|tax\s*invoice|invoice\s*no|bill\s*no|date|gstin|phone|mobile|tel|address|thank|subtotal|sub\s*total|cgst|sgst|igst|grand\s*total|total|round|amount\s*in\s*words|declared|assertion|novelty|hereby|subject|cashier|salesman|customer|bill\s*to|ship\s*to|delivery\s*note|order\s*no|p\.?o\.?\s*no|hsn|sac|discount|refund|paid|balance|due|credit|debit|page|scanned|copy|original)\b/i;
+const BILL_QTY_RE = /(?:qty\.?|quantity|pcs|pieces|nos|units|boxes|packs|pairs)\b\.?\s*[:=]?\s*(\d{1,5})(?![\d%])/i;
+const BILL_QTY_REV_RE = /(?:^|\s)(\d{1,5})\s*(?:nos?|pcs|pieces|units?|boxes|packs?|pairs)\b/i;
+const BILL_PAIR_RE = /(?:^|\s)(\d{1,5})\s*[x×]\s*(?:₹|Rs\.?|INR|\$|rs)?\s*([\d,]+(?:\.\d{1,2})?)\b/i;
+
+/* numbers that are free-standing on the line — NOT part of a model number like M8 / 15W-40 / 12mm */
+function standaloneNumbers(line) {
+  const out = [];
+  const re = /(\d[\d,]*(?:\.\d{1,2})?)([A-Za-z]*)/g;
+  let m;
+  while ((m = re.exec(line))) {
+    const pre = m.index > 0 ? line[m.index - 1] : '';
+    if (/[A-Za-z]/.test(pre)) continue;     // M8 / 15W-40 → digit glued to letters
+    if (m[2] && /[A-Za-z]/.test(m[2])) continue; // 12mm → letters directly after
+    if (m.index === 0 && /[.)]/.test(m[1].slice(-1))) continue; // leftover serial "1." "2)"
+    out.push(parseFloat(m[1].replace(/,/g, '')));
+  }
+  return out;
+}
+
+function parseBillItems(text) {
+  const rawLines = String(text || '').split(/\r?\n/);
+  const items = [];
+  for (let raw of rawLines) {
+    let line = raw.replace(/[|*_#]+/g, ' ').replace(/\s+/g, ' ').trim();
+    line = line.replace(/(\d)\s*[.)](?=[A-Za-z])/g, '$1. ');   // "4.Brass" (OCR lost the space)
+    line = line.replace(/\b(qty|quantity)\s*[:=]\s*(\d{1,5})\b/gi, 'qty $2'); // "qty:5" glued
+    line = line.replace(/(\d)(nos|pcs|pieces|units|boxes|packs|pairs)\b/gi, '$1 $2'); // "3nos" glued
+    line = line.replace(/^\s*\d{1,3}[.)]\s+/, '');              // leading list serial "1." "2)"
+    if (line.length < 3 || !/\d/.test(line)) continue;          // no numbers → header/footer text
+    if (BILL_SKIP_RE.test(line)) continue;
+    const pairM = line.match(BILL_PAIR_RE);
+    let qtyM = line.match(BILL_QTY_RE);
+    if (!qtyM) qtyM = line.match(BILL_QTY_REV_RE);
+    const numsMatch = standaloneNumbers(line);
+    if (!pairM && !qtyM && numsMatch.length < 2) continue;      // need qty + price signals
+    // name = tokens that are not pure numbers / qty words / currency
+    const toks = line.split(' ');
+    const nameToks = [];
+    toks.forEach((tok, ti) => {
+      const t = tok.replace(/^[.\-:–—,()]+|[.\-:–—,()]+$/g, '');
+      if (!t) return;
+      if (/^(qty\.?|quantity|nos|pcs|units?|boxes?|packs?|pairs?|x|×|@|rs\.?|inr|₹|\$)$/i.test(t)) return;
+      if (/^\d{1,3}[.)]$/.test(t)) return;                      // leftover serial "4." anywhere
+      if (/^\d+(?:[.,]\d+)*$/.test(t)) return;                  // pure number → not part of name
+      if (/^\d{1,5}\s*[x×]$/i.test(t)) return;                  // "10x" / "10 x" merged by OCR
+      if (/^\d+(?:\.\d+)?%$/.test(t)) return;                   // "18%" GST rate
+      nameToks.push(t);
+    });
+    let name = nameToks.join(' ').replace(/\s{2,}/g, ' ').trim();
+    if (!/[a-z]/i.test(name) || name.length < 3) continue;
+    let qty = 0, price = 0;
+    const pickPrice = (q) => {
+      const CAND = numsMatch.filter(n => n > 0);
+      const last = CAND[CAND.length - 1];
+      if (last == null) return 0;
+      return (q > 1 && last % q === 0 && last / q < last) ? last / q : last;
+    };
+    if (pairM) { qty = parseInt(pairM[1]); price = parseFloat(pairM[2].replace(/,/g, '')); }
+    else if (qtyM) { qty = parseInt(qtyM[1]); price = pickPrice(qty); }
+    else { qty = numsMatch.find(n => n <= 9999) || 0; if (!qty) continue; price = pickPrice(qty); }
+    if (qty <= 0) qty = 1;
+    items.push({ name: name.slice(0, 60), qty, price: price || 0 });
+    if (items.length >= 40) break;
+  }
+  return items;
+}
+
+/* --- choose which existing stock item each parsed row belongs to (fuzzy name match) --- */
+function matchExistingProducts(items) {
+  const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const squish = s => norm(s).replace(/ /g, '');   // "Brass Nut M8" === "NutM8" after OCR space loss
+  return items.map(it => {
+    let match = '';
+    const n = norm(it.name);
+    if (n) {
+      const sq = squish(it.name);
+      const exact = state.products.find(p => norm(p.name) === n) || state.products.find(p => squish(p.name) === sq);
+      const partial = exact || state.products.find(p => norm(p.name).indexOf(n) >= 0 || n.indexOf(norm(p.name)) >= 0) || (sq.length >= 5 && state.products.find(p => { const q = squish(p.name); return q.length >= 4 && (q.indexOf(sq) >= 0 || sq.indexOf(q) >= 0); }));
+      if (partial) match = partial.id;
+    }
+    return Object.assign({}, it, { productMatch: match, category: it.category || '', sku: it.sku || '', brand: it.brand || '', barcode: it.barcode || '', costPrice: it.costPrice || 0 });
+  });
+}
+
+function finishBillAnalysis(items, kind) {
+  items = items.filter(it => it && it.name);
+  billMeta.kind = kind;
+  const gstinM = (billMeta.rawText || '').match(/\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3})\b/);
+  billMeta.hasGst = !!gstinM || /\b(cgst|sgst|igst|taxable|hsn)\b/i.test(billMeta.rawText || '');
+  billMeta.gstin = gstinM ? gstinM[1] : '';
+  const matched = matchExistingProducts(items);
+  setBillProgress(100, 'Done');
+  if (items.length === 0) {
+    setBillStatus(`⚠️ I read the ${kind} but couldn't confidently find any product lines.<br><span style="font-size:12px">Add them manually with ＋ Add Row — or try a sharper photo / an Excel sheet of your stock.</span>`);
+  } else {
+    const found = matched.filter(m => m.productMatch).length;
+    setBillStatus(`✅ Found <strong>${items.length} item${items.length > 1 ? 's' : ''}</strong> — ${items.length - found} new, ${found} already in your stock. Check the list & add.`);
+  }
+  if (!document.getElementById('modal-bill') || document.getElementById('modal-bill').hasAttribute('hidden')) openBillModal(matched);
+  else openBillModal(matched);
+  setTimeout(function () { const w = document.getElementById('bill-progress-wrap'); if (w) w.classList.add('hidden'); }, 900);
+}
+
+function openBillModal(items) {
+  billItems = (items && items.length) ? items : [emptyBillItem()];
+  renderBillItems();
+  document.getElementById('modal-bill').removeAttribute('hidden');
+}
+
+function emptyBillItem() { return { name: '', qty: 1, price: 0, productMatch: '', category: '', sku: '', brand: '', barcode: '', costPrice: 0 }; }
+
+let billItems = [];
+let billMeta = { hasGst: false, gstin: '', rawText: '', kind: '' };
+
+/* ------- item editor rows in the Bill Analysis modal ------- */
+function renderBillItems() {
+  const host = document.getElementById('bill-items');
+  if (!host) return;
+  host.innerHTML = '';
+  billItems.forEach((it, i) => {
+    const row = document.createElement('div');
+    row.className = 'invoice-line bill-line-row';
+    row.dataset.line = i;
+    const sel = document.createElement('select');
+    sel.className = 'bill-match';
+    sel.innerHTML = '<option value="">✚ New product</option>' + state.products.map(p => `<option value="${p.id}" ${p.id === it.productMatch ? 'selected' : ''}>${esc(p.name)} · ${p.quantity} in stock</option>`).join('');
+    row.innerHTML = `
+      <div class="il-cell bill-namecell"><label>Item</label><input class="bill-name" type="text" value="${esc(it.name)}" placeholder="Item name"></div>
+      <div class="il-cell"><label>Exists as</label></div>
+      <div class="il-cell"><label>Qty</label><input class="bill-qty" type="number" min="1" step="1" value="${it.qty || 1}" inputmode="numeric"></div>
+      <div class="il-cell"><label>Price ₹</label><input class="bill-price" type="number" min="0" step="0.01" value="${it.price || 0}" inputmode="decimal"></div>
+      <div class="il-cell bill-delcell"><label>&nbsp;</label><button type="button" class="btn btn-sm btn-danger" data-action="bill-row-remove" title="Remove">✕</button></div>`;
+    row.children[1].appendChild(sel);
+    host.appendChild(row);
+  });
+  host.oninput = onBillItemInput;
+  host.onchange = onBillItemInput;
+  syncBillItems();
+  updateBillSummary();
+}
+
+function onBillItemInput(e) {
+  const t = e.target;
+  const row = t.closest && t.closest('.bill-line-row');
+  if (!row) return;
+  const i = parseInt(row.dataset.line);
+  const it = billItems[i];
+  if (!it) return;
+  if (t.classList.contains('bill-name')) it.name = t.value;
+  else if (t.classList.contains('bill-qty')) it.qty = num(t.value) || 1;
+  else if (t.classList.contains('bill-price')) it.price = num(t.value);
+  else if (t.classList.contains('bill-match')) {
+    it.productMatch = t.value;
+    if (t.value) {
+      const p = state.products.find(x => x.id === t.value);
+      if (p && p.unitPrice) {
+        it.price = p.unitPrice;
+        const priceEl = row.querySelector('.bill-price');
+        if (priceEl) priceEl.value = p.unitPrice.toFixed(2);
+        toast('Price auto-filled from ' + p.name, 'info');
+      }
+    }
+  }
+  updateBillSummary();
+}
+
+function updateBillSummary() {
+  const el = document.getElementById('bill-summary');
+  if (!el) return;
+  const valid = billItems.filter(it => it.name);
+  const existing = valid.filter(it => it.productMatch).length;
+  el.textContent = valid.length ? `${valid.length} item${valid.length > 1 ? 's' : ''} · ${valid.length - existing} new + ${existing} existing` : 'Add items below';
+}
+
+function syncBillItems() {
+  document.querySelectorAll('#bill-items .bill-line-row').forEach(row => {
+    const i = parseInt(row.dataset.line);
+    const it = billItems[i];
+    if (!it) return;
+    it.name = row.querySelector('.bill-name').value;
+    it.qty = num(row.querySelector('.bill-qty').value) || 1;
+    it.price = num(row.querySelector('.bill-price').value);
+  });
+}
+
+function handleBillConfirm(e) {
+  e && e.preventDefault && e.preventDefault();
+  syncBillItems();
+  const valid = billItems.filter(it => it.name && it.name.trim() && it.qty > 0);
+  if (valid.length === 0) { toast('Add at least one item with a name', 'error'); return; }
+  let txIds = [];
+  valid.forEach(it => {
+    const res = addStockEntry({
+      productId: it.productMatch || null,
+      name: it.name.trim(),
+      sku: it.sku, category: it.category, brand: it.brand, barcode: it.barcode,
+      unitPrice: it.price, costPrice: it.costPrice, quantity: it.qty,
+      source: 'bill', note: 'From bill' + (billMeta.kind ? ' (' + billMeta.kind + ')' : ''),
+    });
+    if (res && res.ok) txIds.push(res.txId);
+  });
+  const newCount = valid.filter(it => !it.productMatch).length;
+  const updCount = valid.length - newCount;
   closeBillModal();
   setPage('transactions');
-  showSuccess('✅ Added from Bill!', `${qty} × ${name} is now in your stock`, 'transactions');
+  txIds.forEach(id => markJustAdded(id));
+  showSuccess(`✅ ${valid.length} Item${valid.length > 1 ? 's' : ''} Added!`, `${newCount} new product${newCount === 1 ? '' : 's'} + ${updCount} existing updated${billMeta.hasGst ? ' · GST bill' : ''}`, 'transactions');
+}
+
+function addBillRow() {
+  syncBillItems();
+  billItems.push(emptyBillItem());
+  renderBillItems();
 }
 
 /* ---------------- stock operations ---------------- */
@@ -2022,7 +2315,9 @@ function handleAction(e) {
     case 'purchase-line-remove': { const row = el.closest('.purchase-line-row'); if (row) { const idx = parseInt(row.dataset.line); if (!isNaN(idx)) purchaseLines.splice(idx, 1); if (purchaseLines.length === 0) purchaseLines.push({ productId: '', qty: 1, unitCost: 0 }); renderPurchaseLines(); computePurchaseTotals(); } return; }
     case 'add-tab': addTab = el.dataset.tab; renderAddStock(); return;
     case 'bill-dropzone': document.getElementById('bill-file').click(); return;
-    case 'bill-add': confirmBillAdd(); return;
+    case 'bill-add': handleBillConfirm(); return;
+    case 'bill-add-row': addBillRow(); return;
+    case 'bill-row-remove': { const row = el.closest('.bill-line-row'); if (row) { const idx = parseInt(row.dataset.line); if (!isNaN(idx)) billItems.splice(idx, 1); if (billItems.length === 0) billItems.push(emptyBillItem()); renderBillItems(); } return; }
     case 'manual-add-submit': document.getElementById('manual-add-form').requestSubmit(); return;
     case 'deduct-submit': document.getElementById('deduct-form').requestSubmit(); return;
     case 'serial-add': addSerialFromForm(el); return;

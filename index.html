@@ -9,7 +9,7 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon-192.png" type="image/png">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="stylesheet" href="styles.css?v=9">
+  <link rel="stylesheet" href="styles.css?v=10">
 </head>
 <body>
   <div class="app-shell">
@@ -61,45 +61,30 @@
 
   <!-- Bill Analysis Modal -->
   <div class="modal-overlay" id="modal-bill" hidden>
-    <div class="modal">
+    <div class="modal" style="width:min(820px,94vw)">
       <div class="modal-header">
         <h2>📄 Bill Analysis</h2>
         <button class="modal-close" id="bill-close" data-action="nav-cancel">✕</button>
       </div>
-      <p class="muted" id="bill-status">Analyzing bill image…</p>
-      <div class="form-grid" id="bill-fields">
-        <div class="field span-2">
-          <label>Product Name</label>
-          <input id="bill-product-name" type="text" placeholder="e.g. Steel Rod 12mm">
-          <p class="hint">Name exactly as it should appear in your stock list</p>
-        </div>
-        <div class="field">
-          <label>Quantity</label>
-          <input id="bill-quantity" type="number" min="1" step="1" placeholder="0">
-          <p class="hint">How many units arrived?</p>
-        </div>
-        <div class="field">
-          <label>Unit Price (optional)</label>
-          <input id="bill-unit-price" type="number" min="0" step="0.01" placeholder="0.00">
-          <p class="hint">Price of one unit, e.g. 85.00</p>
-        </div>
-        <div class="field span-2">
-          <label>Existing Product (optional)</label>
-          <select id="bill-product-select">
-            <option value="">➕ Create a new product</option>
-            <option value="" disabled></option>
-          </select>
-          <p class="hint">Pick an existing item to add quantity to it</p>
+      <p class="muted" id="bill-status" style="margin:0 0 10px">Analyzing…</p>
+      <div class="toolbar" style="margin-bottom:8px">
+        <div class="muted" style="font-size:13px" id="bill-summary">No items yet</div>
+        <div class="toolbar-right">
+          <button type="button" class="btn btn-sm" data-action="bill-add-row">＋ Add Row</button>
         </div>
       </div>
+      <div id="bill-items"></div>
       <div id="bill-progress-wrap" class="hidden">
         <div class="progress"><div id="bill-progress-bar"></div></div>
         <p class="muted" id="bill-progress-text">0%</p>
       </div>
-      <pre id="bill-ocr-text" class="ocr-text"></pre>
+      <details style="margin-top:10px">
+        <summary class="muted" style="font-size:12px;cursor:pointer">Read the raw bill text (for checking)</summary>
+        <pre id="bill-ocr-text" class="ocr-text" style="margin-top:8px"></pre>
+      </details>
       <div class="modal-actions">
         <button class="btn" id="bill-cancel" data-action="nav-cancel">Cancel</button>
-        <button class="btn btn-primary" id="bill-add" data-action="bill-add">➕ Add to Stock</button>
+        <button class="btn btn-primary" id="bill-add" data-action="bill-add">➕ Add All to Stock</button>
       </div>
     </div>
   </div>
@@ -452,7 +437,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=2"></script>
   <script src="cloud.js?v=4"></script>
-  <script src="app.js?v=12"></script>
+  <script src="app.js?v=13"></script>
   <script>
     try {
       if ('serviceWorker' in navigator && location.protocol !== 'file:') {
