@@ -291,7 +291,7 @@
           </div>
           <div class="field">
             <label>Customer (optional)</label>
-            <select id="inv-customer"></select>
+            <input id="inv-customer" class="party-input" list="party-dl-customer" data-ptype="customer" data-pid="" value="" placeholder="🔍 Walk-in — ya type karke customer dhundo" autocomplete="off" oninput="onPartyInput(this)" onchange="onPartyInput(this)">
             <button type="button" class="btn btn-sm" data-action="party-quick-customer">✚ New customer</button>
             <p class="hint">Leave empty for a walk-in sale</p>
           </div>
@@ -419,7 +419,7 @@
           <div class="field"><label>Date</label><input id="pur-date" type="date"></div>
           <div class="field">
             <label>Supplier *</label>
-            <select id="pur-supplier"></select>
+            <input id="pur-supplier" class="party-input" list="party-dl-supplier" data-ptype="supplier" data-pid="" value="" placeholder="🔍 Type to search supplier…" autocomplete="off" oninput="onPartyInput(this)" onchange="onPartyInput(this)">
             <button type="button" class="btn btn-sm" data-action="party-quick-supplier">✚ New supplier</button>
             <p class="hint">Who you bought from — pick from list or quick-add</p>
           </div>
@@ -448,7 +448,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=2"></script>
   <script src="cloud.js?v=4"></script>
-  <script src="app.js?v=17"></script>
+  <script src="app.js?v=18"></script>
   <script>
     try {
       if ('serviceWorker' in navigator && location.protocol !== 'file:') {

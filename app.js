@@ -401,14 +401,11 @@ function renderAddStock() {
       <div class="field">
         <label>Step 1 · Product *</label>
         <div style="display:flex;gap:8px">
-          <select id="manual-product" onchange="manualProductId=this.value; document.getElementById('manual-new-fields').classList.toggle('hidden', this.value!=='new')" style="flex:1">
-          <option value="">— Select existing product —</option>
-          ${state.products.map(p => `<option value="${p.id}" ${p.id === manualProductId ? 'selected' : ''}>${esc(p.name)} (${p.quantity} in stock)</option>`).join('')}
-          <option value="new">✚ Create a brand-new product</option>
-          </select>
+          <input id="manual-product" class="search-input" style="flex:1" list="product-datalist" value="${(() => { const mp = state.products.find(p => p.id === manualProductId); return mp ? esc(mp.name) : ''; })()}" placeholder="🔍 Type to search product…" autocomplete="off" oninput="onManualProductInput(this)" onchange="onManualProductChange(this)">
           <button type="button" class="btn btn-sm" data-action="scan-open" data-context="add">📷</button>
         </div>
-        <p class="hint">Pick an item you already have, or 📷 scan its barcode</p>
+        <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input id="manual-new-toggle" type="checkbox" onchange="toggleManualNew(this.checked)"> ✚ Naya product create karna hai (stock me nahi hai)</label>
+        <p class="hint">Type karke existing item dhundo, ya tick karke naya banao · 📷 scan bhi hai</p>
       </div>
       <div id="manual-new-fields" class="hidden">
         <div class="form-grid">
@@ -450,6 +447,7 @@ function renderAddStock() {
 
   $('page').innerHTML = html;
   setTopbarActions('');
+  if (addTab === 'manual') ensureProductDatalist();
   return html;
 }
 
@@ -1291,13 +1289,10 @@ function renderDeduct() {
     <div class="field">
       <label>Step 1 · Product *</label>
       <div style="display:flex;gap:8px">
-        <select id="deduct-product" onchange="deductProductId=this.value; render();" style="flex:1">
-          <option value="">— Select product —</option>
-          ${state.products.map(p => `<option value="${p.id}" ${p.id === deductProductId ? 'selected' : ''}>${esc(p.name)} (${p.quantity} in stock)</option>`).join('')}
-        </select>
+        <input id="deduct-product" class="search-input" style="flex:1" list="product-datalist" value="${(() => { const sp = state.products.find(p => p.id === deductProductId); return sp ? esc(sp.name) : ''; })()}" placeholder="🔍 Type to search product…" autocomplete="off" oninput="onDeductProductInput(this)" onchange="onDeductProductChange(this)">
         <button type="button" class="btn btn-sm" data-action="scan-open" data-context="deduct">📷</button>
       </div>
-      <p class="hint">Pick an item or 📷 scan its barcode</p>
+      <p class="hint">Type karo — matching products dikhte hain · 📷 scan bhi kar sakte ho</p>
     </div>
     <div id="deduct-product-summary" class="muted" style="margin:-6px 0 12px;font-size:13px"></div>
     <div class="field">
@@ -1333,6 +1328,7 @@ function renderDeduct() {
   </form>`;
   setTopbarActions('');
   renderDeductProducts();
+  ensureProductDatalist();
   return $('page').innerHTML;
 }
 
@@ -1341,6 +1337,19 @@ function renderDeductProducts() {
   const product = state.products.find(p => p.id === deductProductId);
   if (product) summary.textContent = `📦 Current stock of ${product.name}: ${product.quantity} units`;
   else summary.textContent = '';
+}
+
+/* type-to-search product in the deduct form */
+function onDeductProductInput(el) {
+  const p = findProductByLabel(el.value);
+  el.dataset.pid = p ? p.id : '';
+  if (p && deductProductId !== p.id) { deductProductId = p.id; renderDeductProducts(); }
+}
+
+function onDeductProductChange(el) {
+  const p = findProductByLabel(el.value);
+  if (p) { deductProductId = p.id; el.value = p.name; render(); }
+  else { deductProductId = ''; renderDeductProducts(); }
 }
 
 /* ---------------- billing ---------------- */
@@ -1657,8 +1666,11 @@ function openInvoiceModal(invoice, forceMode) {
   const nextNo = invoice ? invoice.invoiceNo : suggestBillNo(invoiceMode, defFmt);
   document.getElementById('inv-no').value = nextNo;
   document.getElementById('inv-date').value = invoice ? (invoice.date || '').slice(0, 10) : new Date().toISOString().slice(0, 10);
-  const custSel = document.getElementById('inv-customer');
-  custSel.innerHTML = '<option value="">Walk-in Customer</option>' + state.parties.filter(p => p.type === 'customer').map(p => `<option value="${p.id}" ${invoice && invoice.customerId === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+  const custEl = document.getElementById('inv-customer');
+  ensurePartyDatalist('customer');
+  const custObj = invoice ? state.parties.find(p => p.id === invoice.customerId) : null;
+  custEl.value = custObj ? custObj.name : '';
+  custEl.dataset.pid = custObj ? custObj.id : '';
   document.getElementById('inv-status').value = invoice ? (invoice.status || 'unpaid') : 'unpaid';
   // format picker
   const fmtSel = document.getElementById('inv-format-wrap');
@@ -1710,6 +1722,46 @@ function findProductByLabel(label) {
 function productInputHtml(cls, it, hint) {
   const p = state.products.find(x => x.id === it.productId);
   return `<input class="${cls} product-search" list="product-datalist" value="${esc(p ? p.name : (it.name || ''))}" data-pid="${it.productId || ''}" placeholder="${hint || '🔍 Type to search product…'}" autocomplete="off">`;
+}
+
+/* ---- type-to-search party picker (dropdown of available parties as you type) ---- */
+function ensurePartyDatalist(type) {
+  const id = 'party-dl-' + (type || 'customer');
+  let dl = document.getElementById(id);
+  if (!dl) { dl = document.createElement('datalist'); dl.id = id; document.body.appendChild(dl); }
+  dl.innerHTML = state.parties.filter(p => p.type === (type || 'customer')).map(p => `<option value="${esc(p.name)}">${esc(p.phone || '')}</option>`).join('');
+  return dl;
+}
+
+function findPartyByLabel(type, label) {
+  const n = String(label || '').trim().toLowerCase();
+  if (!n) return null;
+  const list = state.parties.filter(p => p.type === type);
+  return list.find(p => (p.name || '').toLowerCase() === n)
+    || list.find(p => (p.name || '').toLowerCase().startsWith(n))
+    || list.find(p => (p.name || '').toLowerCase().indexOf(n) >= 0)
+    || null;
+}
+
+function partyInputHtml(id, type, partyId, hint) {
+  const p = state.parties.find(x => x.id === partyId);
+  return `<input id="${id}" class="party-input" list="party-dl-${type}" data-ptype="${type}" data-pid="${p ? p.id : ''}" value="${esc(p ? p.name : '')}" placeholder="${hint || '🔍 Type to search party…'}" autocomplete="off" oninput="onPartyInput(this)" onchange="onPartyInput(this)">`;
+}
+
+function onPartyInput(el) {
+  const p = findPartyByLabel(el.dataset.ptype, el.value);
+  el.dataset.pid = p ? p.id : '';
+  if (el.id === 'pay-party') updatePayOutstanding();
+  if (el.id === 'old-party') updateOldHint();
+}
+
+/* resolve the party chosen in a search input → id ('' if none matched) */
+function partyInputId(id) {
+  const el = document.getElementById(id);
+  if (!el) return '';
+  if (el.dataset && el.dataset.pid) return el.dataset.pid;
+  const p = findPartyByLabel(el.dataset.ptype, el.value);
+  return p ? p.id : '';
 }
 
 function addInvoiceLine() { ensureProductDatalist(); invoiceLines.push({ productId: '', qty: 1, unitPrice: 0, gstRate: invoiceMode === 'gst' ? 18 : 0, discount: 0 }); renderInvoiceLines(); }
@@ -1804,7 +1856,7 @@ function handleInvoiceSave(e) {
   const lines = invoiceLines.map(l => ({ productId: l.productId, name: l.name || '', qty: num(l.qty), unitPrice: num(l.unitPrice), gstRate: invoiceMode === 'gst' ? num(l.gstRate) : 0, discount: num(l.discount), discountPct: num(l.discountPct) })).filter(l => (l.productId || (l.name || '').trim()) && l.qty > 0);
   if (lines.length === 0) { toast('Add at least one item — stock se pick karo ya koi bhi naam type karo', 'error'); return; }
   const { subtotal, gst, discountTotal, total } = computeInvoiceTotals();
-  const customer = state.parties.find(p => p.id === (document.getElementById('inv-customer').value || '')) || null;
+  const customer = state.parties.find(p => p.id === partyInputId('inv-customer')) || null;
   const formatId = document.getElementById('inv-format') ? (document.getElementById('inv-format').value || '') : '';
   const invoice = {
     id: editingProductId || 'inv-' + uid(),
@@ -1869,7 +1921,9 @@ function openPurchaseModal() {
   document.getElementById('pur-date').value = new Date().toISOString().slice(0, 10);
   document.getElementById('pur-note').value = '';
   const sel = document.getElementById('pur-supplier');
-  sel.innerHTML = '<option value="">— Select supplier —</option>' + state.parties.filter(p => p.type === 'supplier').map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  ensurePartyDatalist('supplier');
+  sel.value = '';
+  sel.dataset.pid = '';
   purchaseLines = [ { productId: '', qty: 1, unitCost: 0 } ];
   renderPurchaseLines();
   computePurchaseTotals();
@@ -1947,7 +2001,7 @@ function computePurchaseTotals() {
 
 function handlePurchaseSave(e) {
   e.preventDefault();
-  const supplier = state.parties.find(p => p.id === document.getElementById('pur-supplier').value) || null;
+  const supplier = state.parties.find(p => p.id === partyInputId('pur-supplier')) || null;
   if (!supplier) { toast('Select a supplier for this purchase', 'error'); return; }
   const lines = purchaseLines.map(l => ({ productId: l.productId, qty: num(l.qty), unitCost: num(l.unitCost) })).filter(l => l.productId && l.qty > 0);
   if (lines.length === 0) { toast('Add at least one line item to the purchase', 'error'); return; }
@@ -2451,7 +2505,7 @@ function renderParties() {
     const customers = tab === 'customers';
     const typeKey = customers ? 'customer' : 'supplier';
     const list = state.parties.filter(p => p.type === typeKey);
-    html += `<div class="toolbar"><input class="search-input" id="party-search" placeholder="🔍 Search by name, phone, vehicle…" value="${esc(partyQuery || '')}" oninput="partySearchInput(this.value)"><div class="muted" style="font-size:13px;margin:0 10px">${list.length}</div>
+    html += `<div class="toolbar"><input class="search-input" id="party-search" list="party-dl-${typeKey}" placeholder="🔍 Type to search party — matching names dikhte hain" value="${esc(partyQuery || '')}" oninput="partySearchInput(this.value)"><div class="muted" style="font-size:13px;margin:0 10px">${list.length}</div>
       <div class="toolbar-right"><button class="btn btn-primary" data-action="party-add" data-type="${tab}">✚ Add ${customers ? 'Customer' : 'Supplier'}</button></div></div>`;
     if (list.length === 0) {
       html += `<div class="card"><div class="empty">No ${tab} yet.<br><button class="btn btn-primary" style="margin-top:12px" data-action="party-add" data-type="${tab}">✚ Add your first ${customers ? 'customer' : 'supplier'}</button></div></div>`;
@@ -2471,7 +2525,7 @@ function renderParties() {
         </div>
         <div class="field">
           <label>Party *</label>
-          <select id="pay-party" onchange="updatePayOutstanding()"></select>
+          <input id="pay-party" class="party-input" list="party-dl-customer" data-ptype="customer" data-pid="" value="" placeholder="🔍 Type to search party…" autocomplete="off" oninput="onPartyInput(this)" onchange="onPartyInput(this)">
         </div>
         <div class="field">
           <label>Against Invoice (optional)</label>
@@ -2507,11 +2561,11 @@ function renderParties() {
         </div>
         <div class="field">
           <label>Party *</label>
-          <select id="old-party" onchange="updateOldHint()"></select>
+          <input id="old-party" class="party-input" list="party-dl-customer" data-ptype="customer" data-pid="" value="" placeholder="🔍 Type to search party…" autocomplete="off" oninput="onPartyInput(this)" onchange="onPartyInput(this)">
         </div>
         <div class="field">
           <label>Entry Type *</label>
-          <select id="old-direction">
+          <select id="old-direction" onchange="updateOldHint()">
             <option value="udhaar">📜 Udhaar — purana bakaya (balance badhega)</option>
             <option value="paid">✅ Already paid — jo pehle de diya (balance kam hoga)</option>
           </select>
@@ -2547,6 +2601,7 @@ function renderParties() {
   document.getElementById('page').innerHTML = html;
   setTopbarActions('');
   if (tab === 'payments') { renderPaymentForm(); renderOldEntryForm(); }
+  if (tab === 'customers' || tab === 'suppliers') ensurePartyDatalist(tab === 'customers' ? 'customer' : 'supplier');
   return html;
 }
 
@@ -2564,18 +2619,17 @@ function renderOldEntryForm() {
 }
 
 function updateOldParties() {
-  const sel = document.getElementById('old-party');
-  if (!sel) return;
   const type = document.getElementById('old-party-type').value;
-  const list = state.parties.filter(p => p.type === type);
-  sel.innerHTML = `<option value="">— Select ${type} —</option>` + list.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  ensurePartyDatalist(type);
+  const el = document.getElementById('old-party');
+  if (el) { el.setAttribute('list', 'party-dl-' + type); el.dataset.ptype = type; el.value = ''; el.dataset.pid = ''; }
   updateOldHint();
 }
 
 function updateOldHint() {
   const host = document.getElementById('old-hint');
   if (!host) return;
-  const party = state.parties.find(x => x.id === document.getElementById('old-party').value);
+  const party = state.parties.find(x => x.id === partyInputId('old-party'));
   const dir = document.getElementById('old-direction').value;
   if (!party) { host.textContent = 'Pick the party whose old record you want to add'; return; }
   const o = partyOutstanding(party.type, party.id);
@@ -2585,7 +2639,7 @@ function updateOldHint() {
 
 function handleOldEntrySave(e) {
   e.preventDefault();
-  const partyId = document.getElementById('old-party').value;
+  const partyId = partyInputId('old-party');
   const amount = num(document.getElementById('old-amount').value);
   const dir = document.getElementById('old-direction').value;
   if (!partyId || !(amount > 0)) { toast('Party select karo aur sahi amount daalo', 'error'); return; }
@@ -2599,18 +2653,17 @@ function handleOldEntrySave(e) {
 }
 
 function updatePayParties() {
-  const sel = document.getElementById('pay-party');
-  if (!sel) return;
   const type = document.getElementById('pay-party-type').value;
-  const list = state.parties.filter(p => p.type === type);
-  sel.innerHTML = `<option value="">— Select ${type} —</option>` + list.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  ensurePartyDatalist(type);
+  const el = document.getElementById('pay-party');
+  if (el) { el.setAttribute('list', 'party-dl-' + type); el.dataset.ptype = type; el.value = ''; el.dataset.pid = ''; }
   updatePayOutstanding();
 }
 
 function updatePayOutstanding() {
   const host = document.getElementById('pay-outstanding');
   if (!host) return;
-  const id = document.getElementById('pay-party').value;
+  const id = partyInputId('pay-party');
   const party = state.parties.find(x => x.id === id);
   if (!party) { host.textContent = 'Pick a party to see their balance'; return; }
   const type = party.type;
@@ -2622,7 +2675,7 @@ function updatePayOutstanding() {
 
 function handlePaymentSave(e) {
   e.preventDefault();
-  const payment = { id: uid(), partyType: document.getElementById('pay-party-type').value, partyId: document.getElementById('pay-party').value, invoiceId: document.getElementById('pay-invoice').value || null, amount: num(document.getElementById('pay-amount').value), method: document.getElementById('pay-method').value, date: new Date().toISOString(), note: document.getElementById('pay-note').value.trim() };
+  const payment = { id: uid(), partyType: document.getElementById('pay-party-type').value, partyId: partyInputId('pay-party'), invoiceId: document.getElementById('pay-invoice').value || null, amount: num(document.getElementById('pay-amount').value), method: document.getElementById('pay-method').value, date: new Date().toISOString(), note: document.getElementById('pay-note').value.trim() };
   if (!payment.partyId || !(payment.amount > 0)) { toast('Select a party and enter a valid amount', 'error'); return; }
   state.payments.unshift(payment);
   if (payment.invoiceId) { const inv = state.invoices.find(i => i.id === payment.invoiceId); if (inv) inv.status = 'paid'; }
@@ -2719,14 +2772,16 @@ function openPartyModal(party, type) {
 /* refresh customer/supplier selects of modals that are already open (e.g. invoice / purchase) */
 function refreshOpenModalSelects(savedId, savedType) {
   if (savedType === 'customer' && !document.getElementById('modal-invoice').hasAttribute('hidden')) {
-    document.getElementById('inv-customer').innerHTML =
-      '<option value="">Walk-in Customer</option>' +
-      state.parties.filter(p => p.type === 'customer').map(p => `<option value="${p.id}" ${p.id === savedId ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+    ensurePartyDatalist('customer');
+    const el = document.getElementById('inv-customer');
+    const p = state.parties.find(x => x.id === savedId);
+    if (p) { el.value = p.name; el.dataset.pid = savedId; }
   }
   if (savedType === 'supplier' && !document.getElementById('modal-purchase').hasAttribute('hidden')) {
-    document.getElementById('pur-supplier').innerHTML =
-      '<option value="">— Select supplier —</option>' +
-      state.parties.filter(p => p.type === 'supplier').map(p => `<option value="${p.id}" ${p.id === savedId ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+    ensurePartyDatalist('supplier');
+    const el = document.getElementById('pur-supplier');
+    const p = state.parties.find(x => x.id === savedId);
+    if (p) { el.value = p.name; el.dataset.pid = savedId; }
   }
 }
 
@@ -2776,7 +2831,9 @@ function openPaymentFor(partyId) {
     if (!typeSel) return;
     typeSel.value = party.type;
     updatePayParties();
-    document.getElementById('pay-party').value = party.id;
+    const pel = document.getElementById('pay-party');
+    pel.value = party.name;
+    pel.dataset.pid = party.id;
     updatePayOutstanding();
     const amt = document.getElementById('pay-amount');
     amt.value = Math.max(0, partyOutstanding(party.type, party.id)).toFixed(2);
@@ -2911,7 +2968,7 @@ function handleSubmit(e) {
 function handleManualAdd(e) {
   e.preventDefault();
   const productId = manualProductId;
-  if (!productId) { toast('👇 First pick a product — or choose "Create a brand-new product"', 'error'); return; }
+  if (!productId) { toast('Pehle product type karke dhundo — ya "Naya product create karna hai" tick karo', 'error'); return; }
   let qty = num(document.getElementById('manual-qty').value);
   let name = '', sku = '', category = '', unitPrice = 0;
   if (productId === 'new') {
@@ -2930,11 +2987,38 @@ function handleManualAdd(e) {
     document.getElementById('manual-qty').value = 1;
     document.getElementById('manual-note').value = '';
     manualProductId = '';
-    document.getElementById('manual-product').value = '';
-    document.getElementById('manual-new-fields').classList.add('hidden');
+    const mp = document.getElementById('manual-product');
+    if (mp) { mp.value = ''; mp.dataset.pid = ''; }
+    toggleManualNew(false);
     markJustAdded(res.txId);
     showSuccess('✅ Stock Added!', `${qty} units${existing ? ' of ' + existing.name : ' of ' + res.product.name} · new total ${res.product.quantity} in stock`, 'transactions');
   }
+}
+
+/* type-to-search product in the add-stock form */
+function onManualProductInput(el) {
+  const p = findProductByLabel(el.value);
+  manualProductId = p ? p.id : '';
+  el.dataset.pid = manualProductId;
+  if (p) toggleManualNew(false);
+}
+
+function onManualProductChange(el) {
+  const p = findProductByLabel(el.value);
+  if (p) { el.value = p.name; manualProductId = p.id; toggleManualNew(false); }
+  else if (manualProductId !== 'new') manualProductId = '';
+}
+
+function toggleManualNew(on) {
+  const nf = document.getElementById('manual-new-fields');
+  if (nf) nf.classList.toggle('hidden', !on);
+  const t = document.getElementById('manual-new-toggle');
+  if (t) t.checked = on;
+  if (on) {
+    manualProductId = 'new';
+    const inp = document.getElementById('manual-product');
+    if (inp) { inp.value = ''; inp.dataset.pid = ''; }
+  } else if (manualProductId === 'new') manualProductId = '';
 }
 
 function handleDeduct(e) {
