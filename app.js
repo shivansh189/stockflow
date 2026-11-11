@@ -336,11 +336,20 @@ function renderStock() {
   const q = (stockQuery || '').toLowerCase();
   const rows = state.products.filter(p => (p.name || '').toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q) || (p.barcode || '').toLowerCase().includes(q) || (p.category || '').toLowerCase().includes(q) || (p.partNumber || '').toLowerCase().includes(q) || (p.brand || '').toLowerCase().includes(q) || (p.vehicleCompatibility || '').toLowerCase().includes(q));
   let html = `<div class="toolbar">
-    <input class="search-input" id="stock-search" placeholder="🔍 Search by name, SKU, brand…" value="${esc(stockQuery || '')}" oninput="stockQuery=this.value; render()" enterkeyhint="search">
+    <input class="search-input" id="stock-search" placeholder="🔍 Search by name, SKU, brand…" value="${esc(stockQuery || '')}" oninput="stockSearchInput(this.value)" enterkeyhint="search">
     <div class="toolbar-right"><button class="btn btn-primary" data-action="product-new">✚ New Product</button></div>
   </div>`;
   html += `<div class="card table-wrap"><table class="data">`;
-  html += `<thead><tr><th>Product</th><th>SKU</th><th>Category</th><th>Unit Price</th><th>In Stock</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead><tbody>`;
+  html += `<thead><tr><th>Product</th><th>SKU</th><th>Category</th><th>Unit Price</th><th>In Stock</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead><tbody id="stock-tbody">`;
+  html += stockRowsHtml(rows);
+  html += `</tbody></table></div>`;
+  $('page').innerHTML = html;
+  setTopbarActions(`<button class="btn btn-primary" data-action="product-new">✚ New Product</button>`);
+  return html;
+}
+
+function stockRowsHtml(rows) {
+  let html = '';
   if (rows.length === 0) {
     html += `<tr><td colspan="7"><div class="empty">No products found.</div></td></tr>`;
   }
@@ -361,10 +370,17 @@ function renderStock() {
       </div></td>
     </tr>`;
   });
-  html += `</tbody></table></div>`;
-  $('page').innerHTML = html;
-  setTopbarActions(`<button class="btn btn-primary" data-action="product-new">✚ New Product</button>`);
   return html;
+}
+
+/* live stock search — updates only the table (input keeps its focus while typing) */
+function stockSearchInput(q) {
+  stockQuery = q;
+  const tbody = document.getElementById('stock-tbody');
+  if (!tbody) return;
+  const low = (q || '').toLowerCase();
+  const rows = state.products.filter(p => (p.name || '').toLowerCase().includes(low) || (p.sku || '').toLowerCase().includes(low) || (p.barcode || '').toLowerCase().includes(low) || (p.category || '').toLowerCase().includes(low) || (p.partNumber || '').toLowerCase().includes(low) || (p.brand || '').toLowerCase().includes(low) || (p.vehicleCompatibility || '').toLowerCase().includes(low));
+  tbody.innerHTML = stockRowsHtml(rows);
 }
 
 /* ---------------- add stock ---------------- */
@@ -1551,7 +1567,29 @@ let invoiceLines = [ { productId: '', qty: 1, unitPrice: 0, gstRate: 18, discoun
 let invoiceMode = 'gst';
 let partyTab = 'customers';
 
-function addInvoiceLine() { invoiceLines.push({ productId: '', qty: 1, unitPrice: 0, gstRate: invoiceMode === 'gst' ? 18 : 0, discount: 0 }); renderInvoiceLines(); }
+/* ------- searchable product picker (input + native datalist) ------- */
+function ensureProductDatalist() {
+  let dl = document.getElementById('product-datalist');
+  if (!dl) { dl = document.createElement('datalist'); dl.id = 'product-datalist'; document.body.appendChild(dl); }
+  dl.innerHTML = state.products.map(p => `<option value="${esc(p.name)}">${esc(p.category || '')}</option>`).join('');
+  return dl;
+}
+
+function findProductByLabel(label) {
+  const n = String(label || '').trim().toLowerCase();
+  if (!n) return null;
+  return state.products.find(p => (p.name || '').toLowerCase() === n)
+    || state.products.find(p => (p.name || '').toLowerCase().startsWith(n))
+    || state.products.find(p => (p.name || '').toLowerCase().indexOf(n) >= 0)
+    || null;
+}
+
+function productInputHtml(cls, it, hint) {
+  const p = state.products.find(x => x.id === it.productId);
+  return `<input class="${cls} product-search" list="product-datalist" value="${esc(p ? p.name : (it.name || ''))}" data-pid="${it.productId || ''}" placeholder="${hint || '🔍 Type to search product…'}" autocomplete="off">`;
+}
+
+function addInvoiceLine() { ensureProductDatalist(); invoiceLines.push({ productId: '', qty: 1, unitPrice: 0, gstRate: invoiceMode === 'gst' ? 18 : 0, discount: 0 }); renderInvoiceLines(); }
 
 function renderInvoiceLines() {
   const host = document.getElementById('invoice-lines');
@@ -1562,7 +1600,7 @@ function renderInvoiceLines() {
     row.className = 'invoice-line invoice-line-row';
     row.dataset.line = i;
     row.innerHTML = `
-      <div class="il-cell il-product"><label>Product</label><select class="line-product"><option value="">Select product…</option>${state.products.map(p => `<option value="${p.id}" ${p.id === it.productId ? 'selected' : ''}>${esc(p.name)}${p.unitPrice ? ' · ' + fmtMoney(p.unitPrice) : ''}</option>`).join('')}</select></div>
+      <div class="il-cell il-product"><label>Product</label>${productInputHtml('line-product', it)}</div>
       <div class="il-cell"><label>Qty</label><input class="line-qty" type="number" min="1" step="1" value="${it.qty || 1}" inputmode="numeric" placeholder="1"></div>
       <div class="il-cell"><label>Rate ₹</label><input class="line-price" type="number" min="0" step="0.01" value="${it.unitPrice || 0}" inputmode="decimal" placeholder="0.00"></div>
       ${gstCell}
@@ -1574,6 +1612,7 @@ function renderInvoiceLines() {
   syncInvoiceLines();
   host.addEventListener('input', onInvoiceLineInput);
   host.addEventListener('change', onInvoiceLineInput);
+  ensureProductDatalist();
 }
 
 function onInvoiceLineInput(e) {
@@ -1581,14 +1620,19 @@ function onInvoiceLineInput(e) {
   const row = t.closest && t.closest('.invoice-line-row');
   if (!row) return;
   syncInvoiceLines();
-  if (t.classList && t.classList.contains('line-product')) {
+  if (t.classList && t.classList.contains('product-search')) {
     const i = parseInt(row.dataset.line);
-    const p = state.products.find(x => x.id === invoiceLines[i].productId);
+    const p = findProductByLabel(t.value);
+    invoiceLines[i].productId = p ? p.id : '';
     if (p) {
+      t.dataset.pid = p.id;
       invoiceLines[i].unitPrice = p.unitPrice || 0;
       const priceEl = row.querySelector('.line-price');
       if (priceEl) priceEl.value = invoiceLines[i].unitPrice.toFixed(2);
       toast('Price auto-filled: ' + p.name + ' @ ' + fmtMoney(p.unitPrice || 0), 'info');
+    } else if (t.value.trim().length >= 2 && !invoiceLines[i].name) {
+      toast('"' + t.value.trim() + '" stock me nahi hai — free item ban ke judega (stock nahi katega)', 'info');
+      invoiceLines[i].name = t.value.trim();
     }
   }
   computeInvoiceTotals();
@@ -1600,7 +1644,12 @@ function syncInvoiceLines() {
     const i = parseInt(row.dataset.line);
     const l = invoiceLines[i];
     if (!l) return;
-    l.productId = row.querySelector('.line-product').value;
+    const pin = row.querySelector('.line-product');
+    if (pin) {
+      const p = findProductByLabel(pin.value);
+      if (pin.value.trim() === '') { l.productId = ''; l.name = ''; }
+      else { l.productId = p ? p.id : ''; l.name = p ? '' : pin.value.trim(); }
+    }
     l.qty = num(row.querySelector('.line-qty').value);
     l.unitPrice = num(row.querySelector('.line-price').value);
     const gstEl = row.querySelector('.line-gst');
@@ -1627,8 +1676,8 @@ function computeInvoiceTotals() {
 
 function handleInvoiceSave(e) {
   e.preventDefault();
-  const lines = invoiceLines.map(l => ({ productId: l.productId, qty: num(l.qty), unitPrice: num(l.unitPrice), gstRate: invoiceMode === 'gst' ? num(l.gstRate) : 0, discount: num(l.discount) })).filter(l => l.productId);
-  if (lines.length === 0) { toast('Add at least one line item to the bill', 'error'); return; }
+  const lines = invoiceLines.map(l => ({ productId: l.productId, name: l.name || '', qty: num(l.qty), unitPrice: num(l.unitPrice), gstRate: invoiceMode === 'gst' ? num(l.gstRate) : 0, discount: num(l.discount) })).filter(l => (l.productId || (l.name || '').trim()) && l.qty > 0);
+  if (lines.length === 0) { toast('Add at least one item — stock se pick karo ya koi bhi naam type karo', 'error'); return; }
   const { subtotal, gst, discountTotal, total } = computeInvoiceTotals();
   const customer = state.parties.find(p => p.id === (document.getElementById('inv-customer').value || '')) || null;
   const formatId = document.getElementById('inv-format') ? (document.getElementById('inv-format').value || '') : '';
@@ -1640,7 +1689,7 @@ function handleInvoiceSave(e) {
     customerId: customer ? customer.id : null,
     customerName: customer ? customer.name : 'Walk-in Customer',
     date: new Date(document.getElementById('inv-date').value || new Date().toISOString().slice(0, 10)).toISOString(),
-    items: lines.map(l => ({ productId: l.productId, name: (state.products.find(p => p.id === l.productId) || {}).name || 'Item', qty: l.qty, unitPrice: l.unitPrice, gstRate: l.gstRate, discount: l.discount })),
+    items: lines.map(l => ({ productId: l.productId || null, name: (state.products.find(p => p.id === l.productId) || {}).name || l.name || 'Item', qty: l.qty, unitPrice: l.unitPrice, gstRate: l.gstRate, discount: l.discount })),
     subtotal, gst, discountTotal, total,
     status: document.getElementById('inv-status').value || 'unpaid',
   };
@@ -1712,7 +1761,7 @@ function renderPurchaseLines() {
     row.className = 'purchase-line-row';
     row.dataset.line = i;
     row.innerHTML = `
-      <div class="il-cell il-product"><label>Product</label><select class="p-line-product"><option value="">Select product…</option>${state.products.map(p => `<option value="${p.id}" ${p.id === it.productId ? 'selected' : ''}>${esc(p.name)}${p.unitPrice ? ' · buy ~' + fmtMoney(p.costPrice || p.unitPrice) : ''}</option>`).join('')}</select></div>
+      <div class="il-cell il-product"><label>Product</label>${productInputHtml('p-line-product', it)}</div>
       <div class="il-cell"><label>Qty</label><input class="p-line-qty" type="number" min="1" step="1" value="${it.qty || 1}" inputmode="numeric" placeholder="1"></div>
       <div class="il-cell"><label>Cost ₹</label><input class="p-line-cost" type="number" min="0" step="0.01" value="${it.unitCost || 0}" inputmode="decimal" placeholder="0.00"></div>
       <div class="il-cell"><label>Amount</label><div class="line-amt">0.00</div></div>
@@ -1722,6 +1771,7 @@ function renderPurchaseLines() {
   syncPurchaseLines();
   host.addEventListener('input', onPurchaseLineInput);
   host.addEventListener('change', onPurchaseLineInput);
+  ensureProductDatalist();
 }
 
 function onPurchaseLineInput(e) {
@@ -1729,10 +1779,12 @@ function onPurchaseLineInput(e) {
   const row = t.closest && t.closest('.purchase-line-row');
   if (!row) return;
   syncPurchaseLines();
-  if (t.classList && t.classList.contains('p-line-product')) {
+  if (t.classList && t.classList.contains('product-search')) {
     const i = parseInt(row.dataset.line);
-    const p = state.products.find(x => x.id === purchaseLines[i].productId);
+    const p = findProductByLabel(t.value);
+    purchaseLines[i].productId = p ? p.id : '';
     if (p) {
+      t.dataset.pid = p.id;
       purchaseLines[i].unitCost = num(p.costPrice) || p.unitPrice || 0;
       const costEl = row.querySelector('.p-line-cost');
       if (costEl) costEl.value = purchaseLines[i].unitCost.toFixed(2);
@@ -1748,7 +1800,8 @@ function syncPurchaseLines() {
     const i = parseInt(row.dataset.line);
     const l = purchaseLines[i];
     if (!l) return;
-    l.productId = row.querySelector('.p-line-product').value;
+    const pin = row.querySelector('.p-line-product');
+    if (pin) { const p = findProductByLabel(pin.value); if (pin.value.trim() === '') l.productId = ''; else l.productId = p ? p.id : (l.productId || ''); }
     l.qty = num(row.querySelector('.p-line-qty').value);
     l.unitCost = num(row.querySelector('.p-line-cost').value);
   });
@@ -1831,7 +1884,7 @@ function renderReturnLines() {
     row.className = 'return-line-row';
     row.dataset.line = i;
     row.innerHTML = `
-      <div class="il-cell il-product"><label>Product</label><select class="r-line-product"><option value="">Select product…</option>${state.products.map(p => `<option value="${p.id}" ${p.id === it.productId ? 'selected' : ''}>${esc(p.name)}${p.quantity !== undefined ? ' · ' + p.quantity + ' in stock' : ''}</option>`).join('')}</select></div>
+      <div class="il-cell il-product"><label>Product</label>${productInputHtml('r-line-product', it)}</div>
       <div class="il-cell"><label>Qty back</label><input class="r-line-qty" type="number" min="1" step="1" value="${it.qty || 1}" inputmode="numeric" placeholder="1"><p class="hint" style="font-size:10px">Units customer returned</p></div>
       <div class="il-cell"><label>Condition</label><select class="r-line-cond"><option value="resellable" ${it.condition === 'resellable' ? 'selected' : ''}>✅ Resellable — stock back</option><option value="damaged" ${it.condition === 'damaged' ? 'selected' : ''}>❌ Damaged — record only</option></select></div>
       <div class="il-cell"><label>Refund ₹</label><input class="r-line-refund" type="number" min="0" step="0.01" value="${it.refund || 0}" inputmode="decimal" placeholder="0"><p class="hint" style="font-size:10px">Money you give back for this line</p></div>
@@ -1844,6 +1897,7 @@ function renderReturnLines() {
     host.addEventListener('change', onReturnLineInput);
     host.dataset.wired = '1';
   }
+  ensureProductDatalist();
 }
 
 function onReturnLineInput(e) {
@@ -1851,10 +1905,12 @@ function onReturnLineInput(e) {
   const row = t.closest && t.closest('.return-line-row');
   if (!row) return;
   syncReturnLines();
-  if (t.classList.contains('r-line-product')) {
+  if (t.classList.contains('product-search')) {
     const i = parseInt(row.dataset.line);
-    const prod = state.products.find(x => x.id === returnLines[i].productId);
+    const prod = findProductByLabel(t.value);
+    returnLines[i].productId = prod ? prod.id : '';
     if (prod) {
+      t.dataset.pid = prod.id;
       const refundEl = row.querySelector('.r-line-refund');
       if (!num(returnLines[i].refund)) {
         returnLines[i].refund = num(prod.unitPrice);
@@ -1870,7 +1926,8 @@ function syncReturnLines() {
     const i = parseInt(row.dataset.line);
     const l = returnLines[i];
     if (!l) return;
-    l.productId = row.querySelector('.r-line-product').value;
+    const pin = row.querySelector('.r-line-product');
+    if (pin) { const p = findProductByLabel(pin.value); if (pin.value.trim() === '') l.productId = ''; else l.productId = p ? p.id : (l.productId || ''); }
     l.qty = num(row.querySelector('.r-line-qty').value);
     l.condition = row.querySelector('.r-line-cond').value;
     l.refund = num(row.querySelector('.r-line-refund').value);
@@ -2168,7 +2225,7 @@ function applyScanResult(product, code) {
     case 'invoice': {
       const existing = invoiceLines.find(l => l.productId === product.id);
       if (existing) { existing.qty = num(existing.qty) + 1; }
-      else { invoiceLines.push({ productId: product.id, qty: 1, unitPrice: num(product.unitPrice), gstRate: 18, discount: 0 }); }
+      else { invoiceLines.push({ productId: product.id, qty: 1, unitPrice: num(product.unitPrice), gstRate: invoiceMode === 'gst' ? 18 : 0, discount: 0 }); }
       renderInvoiceLines(); computeInvoiceTotals();
       toast('✅ ' + product.name + ' added to the bill');
       break;
@@ -2224,7 +2281,8 @@ function renderParties() {
   </div>`;
   if (tab === 'customers' || tab === 'suppliers') {
     const customers = tab === 'customers';
-    const list = state.parties.filter(p => p.type === tab);
+    const typeKey = customers ? 'customer' : 'supplier';
+    const list = state.parties.filter(p => p.type === typeKey);
     html += `<div class="toolbar"><div class="muted" style="font-size:13px">${customers ? 'People you bill' : 'People you buy from'} · ${list.length}</div>
       <div class="toolbar-right"><button class="btn btn-primary" data-action="party-add" data-type="${tab}">✚ Add ${customers ? 'Customer' : 'Supplier'}</button></div></div>`;
     if (list.length === 0) {
@@ -2232,7 +2290,7 @@ function renderParties() {
     } else {
       html += `<div class="cards-list">`;
       list.forEach(c => {
-        const outstanding = partyOutstanding(tab, c.id);
+        const outstanding = partyOutstanding(typeKey, c.id);
         const oweCls = outstanding > 0.005 ? 'badge-low' : 'badge-ok';
         const oweTxt = customers ? (outstanding > 0.005 ? 'owes you ' : 'all settled ') : (outstanding > 0.005 ? 'you owe ' : 'all settled ');
         html += `<div class="card party-card">
@@ -2292,18 +2350,59 @@ function renderParties() {
       </div>
       <button type="submit" class="btn btn-primary btn-lg">💳 Save Payment</button>
     </form>
+    <form id="oldentry-form" class="card" style="max-width:640px;margin-bottom:16px">
+      <h3>📜 Purani Entry / Old Balance</h3>
+      <p class="hint" style="margin:-6px 0 12px">Purana hisaab add karo — pehle ka udhaar ya jo paisa de diya gaya tha. Date purani bhi daal sakte ho.</p>
+      <div class="form-grid">
+        <div class="field">
+          <label>Party Type *</label>
+          <select id="old-party-type" onchange="updateOldParties()">
+            <option value="customer">Customer</option>
+            <option value="supplier">Supplier</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Party *</label>
+          <select id="old-party" onchange="updateOldHint()"></select>
+        </div>
+        <div class="field">
+          <label>Entry Type *</label>
+          <select id="old-direction">
+            <option value="udhaar">📜 Udhaar — purana bakaya (balance badhega)</option>
+            <option value="paid">✅ Already paid — jo pehle de diya (balance kam hoga)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Amount ₹ *</label>
+          <input id="old-amount" type="number" min="0.01" step="0.01" value="0" required inputmode="decimal">
+        </div>
+        <div class="field">
+          <label>Date of old entry</label>
+          <input id="old-date" type="date" value="">
+        </div>
+        <div class="field">
+          <label>Note (optional)</label>
+          <input id="old-note" type="text" placeholder="e.g. Purana hisaab Oct 2024">
+        </div>
+      </div>
+      <p class="hint" id="old-hint" style="margin-bottom:10px"></p>
+      <button type="submit" class="btn btn-primary btn-lg">📜 Save Old Entry</button>
+    </form>
     <div class="card table-wrap"><table class="data"><thead><tr><th>Date</th><th>Party</th><th>Invoice</th><th>Amount</th><th>Method</th><th>Note</th></tr></thead><tbody>`;
     if (state.payments.length === 0) html += `<tr><td colspan="6"><div class="empty">No payments recorded yet.</div></td></tr>`;
     state.payments.forEach(p => {
       const party = state.parties.find(x => x.id === p.partyId);
       const inv = state.invoices.find(x => x.id === p.invoiceId);
-      html += `<tr><td style="white-space:nowrap">${fmtDate(p.date)}</td><td>${esc(party ? party.name : p.partyId)}</td><td class="mono">${esc(inv ? inv.invoiceNo : '—')}</td><td><span class="strong">${fmtMoney(p.amount)}</span></td><td>${esc(p.method)}</td><td>${esc(p.note || '—')}</td></tr>`;
+      const oldEntry = !!p.old;
+      const amtTxt = oldEntry ? (p.amount < 0 ? `<span class="badge badge-low">+ ${fmtMoney(Math.abs(p.amount))} bakaya</span>` : `<span class="badge badge-ok">- ${fmtMoney(p.amount)} paid</span>`) : `<span class="strong">${fmtMoney(p.amount)}</span>`;
+      const methodTxt = oldEntry ? '📜 Old Entry' : esc(p.method);
+      html += `<tr><td style="white-space:nowrap">${fmtDate(p.date)}</td><td>${esc(party ? party.name : p.partyId)}</td><td class="mono">${esc(inv ? inv.invoiceNo : '—')}</td><td>${amtTxt}</td><td>${methodTxt}</td><td>${esc(p.note || '—')}</td></tr>`;
     });
     html += `</tbody></table></div>`;
   }
   document.getElementById('page').innerHTML = html;
   setTopbarActions('');
-  if (tab === 'payments') { renderPaymentForm(); }
+  if (tab === 'payments') { renderPaymentForm(); renderOldEntryForm(); }
   return html;
 }
 
@@ -2311,6 +2410,48 @@ function renderPaymentForm() {
   updatePayParties();
   const invSel = document.getElementById('pay-invoice');
   invSel.innerHTML = '<option value="">— No invoice —</option>' + state.invoices.filter(i => i.status !== 'cancelled').map(i => `<option value="${i.id}">${esc(i.invoiceNo)} · ${esc(i.customerName)}</option>`).join('');
+}
+
+/* ------- old / previous khata entries ------- */
+function renderOldEntryForm() {
+  updateOldParties();
+  const d = document.getElementById('old-date');
+  if (d && !d.value) d.value = new Date().toISOString().slice(0, 10);
+}
+
+function updateOldParties() {
+  const sel = document.getElementById('old-party');
+  if (!sel) return;
+  const type = document.getElementById('old-party-type').value;
+  const list = state.parties.filter(p => p.type === type);
+  sel.innerHTML = `<option value="">— Select ${type} —</option>` + list.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  updateOldHint();
+}
+
+function updateOldHint() {
+  const host = document.getElementById('old-hint');
+  if (!host) return;
+  const party = state.parties.find(x => x.id === document.getElementById('old-party').value);
+  const dir = document.getElementById('old-direction').value;
+  if (!party) { host.textContent = 'Pick the party whose old record you want to add'; return; }
+  const o = partyOutstanding(party.type, party.id);
+  const dirTxt = dir === 'udhaar' ? (party.type === 'customer' ? 'inhe udhaar dena' : 'inhe dena hai') : (party.type === 'customer' ? 'inse paisa mil chuka' : 'inhe de chuka');
+  host.textContent = `${party.name} ki abhi khata balance: ${fmtMoney(Math.abs(o))} ${o > 0.005 ? 'bakaya' : 'clear'} · ye entry balance me ${dir === 'udhaar' ? '+' : '−'} ho jayegi (${dirTxt})`;
+}
+
+function handleOldEntrySave(e) {
+  e.preventDefault();
+  const partyId = document.getElementById('old-party').value;
+  const amount = num(document.getElementById('old-amount').value);
+  const dir = document.getElementById('old-direction').value;
+  if (!partyId || !(amount > 0)) { toast('Party select karo aur sahi amount daalo', 'error'); return; }
+  const party = state.parties.find(x => x.id === partyId);
+  const dateVal = document.getElementById('old-date').value || new Date().toISOString().slice(0, 10);
+  const signed = dir === 'udhaar' ? -amount : amount;
+  const entry = { id: uid(), partyType: party.type, partyId: partyId, invoiceId: null, amount: signed, method: 'Old Entry', date: new Date(dateVal + 'T12:00:00').toISOString(), note: document.getElementById('old-note').value.trim() || 'Purani entry', old: true };
+  state.payments.unshift(entry);
+  saveState(); render();
+  showSuccess('✅ Old Entry Saved!', `${party.name} · ${fmtMoney(amount)} ${dir === 'udhaar' ? 'bakaya added' : 'paid recorded'}`, 'parties');
 }
 
 function updatePayParties() {
@@ -2416,8 +2557,9 @@ let editingPartyId = null;
 
 function openPartyModal(party, type) {
   editingPartyId = party ? party.id : null;
-  document.getElementById('party-modal-title').textContent = party ? '✏️ Edit ' + (party.type === 'customer' ? 'Customer' : 'Supplier') : '✚ Add ' + (type === 'supplier' ? 'Supplier' : 'Customer');
-  document.getElementById('party-type').value = party ? party.type : (type || 'customer');
+  const norm = type === 'suppliers' ? 'supplier' : type === 'customers' ? 'customer' : type;
+  document.getElementById('party-modal-title').textContent = party ? '✏️ Edit ' + (party.type === 'customer' ? 'Customer' : 'Supplier') : '✚ Add ' + (norm === 'supplier' ? 'Supplier' : 'Customer');
+  document.getElementById('party-type').value = party ? party.type : (norm || 'customer');
   document.getElementById('party-name').value = party ? party.name : '';
   document.getElementById('party-phone').value = party ? (party.phone || '') : '';
   document.getElementById('party-gst').value = party ? (party.gst || '') : '';
@@ -2616,6 +2758,7 @@ function handleSubmit(e) {
   if (form.id === 'cloud-email-form') { e.preventDefault(); handleCloudEmailSubmit(e); return; }
   if (form.id === 'cloud-code-form') { e.preventDefault(); handleCloudCodeSubmit(e); return; }
   if (form.id === 'payment-form') { e.preventDefault(); handlePaymentSave(e); return; }
+  if (form.id === 'oldentry-form') { e.preventDefault(); handleOldEntrySave(e); return; }
   if (form.id === 'party-form') { e.preventDefault(); handlePartySave(e); return; }
   if (form.id === 'manual-add-form') { e.preventDefault(); handleManualAdd(e); return; }
   if (form.id === 'deduct-form') { e.preventDefault(); handleDeduct(e); return; }
@@ -2979,7 +3122,6 @@ let addTab = 'manual';
 document.addEventListener('click', handleAction);
 document.addEventListener('change', handleChange);
 document.addEventListener('submit', handleSubmit);
-document.addEventListener('input', e => { if (e.target && e.target.id === 'stock-search') { stockQuery = e.target.value; render(); } });
 
 // close quick-create sheet by tapping outside the sheet
 document.getElementById('quick-sheet').addEventListener('click', function (e) {
