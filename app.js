@@ -460,15 +460,22 @@ function closeBillModal() { document.getElementById('modal-bill').setAttribute('
 
 function billFileSelected(input) { if (input.files && input.files[0]) runBillAnalysis(input.files[0]); }
 
-/* lazy CDN loaders — only fetched when the user actually uploads that file type */
-function loadScriptOnce(url, globalKey) {
+/* lazy CDN loaders — only fetched when the user actually uploads that file type.
+   altUrl is a second CDN in case the first one is blocked/slow on the user's network. */
+function loadScriptOnce(url, globalKey, altUrl) {
   if (window[globalKey]) return Promise.resolve(window[globalKey]);
-  return new Promise(function (resolve, reject) {
-    const s = document.createElement('script');
-    s.src = url;
-    s.onload = function () { if (window[globalKey]) resolve(window[globalKey]); else reject(new Error(globalKey + ' failed to load')); };
-    s.onerror = function () { reject(new Error('Could not load library (check internet) ' + globalKey)); };
-    document.head.appendChild(s);
+  const tryLoad = function (src) {
+    return new Promise(function (resolve, reject) {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = function () { window[globalKey] ? resolve(window[globalKey]) : reject(new Error(globalKey + ' failed to load')); };
+      s.onerror = function () { reject(new Error('Could not load library (check internet) ' + globalKey)); };
+      document.head.appendChild(s);
+    });
+  };
+  return tryLoad(url).catch(function (e) {
+    if (!altUrl) throw e;
+    return tryLoad(altUrl);
   });
 }
 
@@ -511,7 +518,7 @@ async function runBillAnalysis(file) {
     } else if (ext === 'xlsx' || ext === 'xls') {
       billMeta.kind = 'spreadsheet';
       setBillStatus('📊 Reading spreadsheet…');
-      await loadScriptOnce('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js', 'XLSX');
+      await loadScriptOnce('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js', 'XLSX', 'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js');
       const buf = await file.arrayBuffer();
       const wb = window.XLSX.read(buf, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
@@ -529,11 +536,24 @@ async function runBillAnalysis(file) {
       billMeta.rawText = text;
       let items = (rowsBox && rowsBox.length) ? parseBillRows(rowsBox) : [];
       if (!items.length) items = parseBillItems(text);
+      if (!items.length && billMeta.kind === 'pdf') {
+        // text layer was there but unusable (odd fonts / one long blob) - read the pages like a photo
+        setBillStatus('PDF text not readable — reading the pages like a photo…');
+        try {
+          const o = await pdfBillText(file, setBillProgress, true);
+          if (o.text) billMeta.rawText = o.text;
+          items = (o.rows && o.rows.length) ? parseBillRows(o.rows) : [];
+          if (!items.length && o.text) items = parseBillItems(o.text);
+        } catch (e2) { /* keep going - user can still add rows manually */ }
+      }
       finishBillAnalysis(items, billMeta.kind === 'image' ? 'image' : 'pdf');
     }
   } catch (err) {
     setBillProgress(0);
-    setBillStatus('❌ Could not analyze: ' + (err && err.message ? err.message : 'unknown error') + '<br><span style="font-size:12px">You can still add items manually with the ＋ Add Row button below.</span>');
+    let msg = err && err.message ? err.message : 'unknown error';
+    if (/password|encrypt/i.test(msg)) msg = 'This PDF is password-protected — remove the password, or upload a photo of the bill instead.';
+    msg = String(msg).replace(/[<>]/g, '');
+    setBillStatus('❌ Could not analyze: ' + msg + '<br><span style="font-size:12px">You can still add items manually with the ＋ Add Row button below.</span>');
     openBillModal([]);
   }
   bill.busy = false;
@@ -588,17 +608,24 @@ function clusterWordsToRows(words) {
   return rows.map(r => r.sort((a, b) => a.x - b.x)).map(r => r.filter(w => w.s)).filter(r => r.length > 0);
 }
 
-async function ocrToRows(src, onProgress) {
-  await loadScriptOnce('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js', 'Tesseract');
+function makeOcrWorker(onProgress) {
+  return loadScriptOnce('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js', 'Tesseract', 'https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js')
+    .then(function () {
+      return window.Tesseract.createWorker('eng', 1, {
+        logger: m => {
+          if (m.status === 'recognizing text' && onProgress) onProgress(10 + (m.progress || 0) * 70, 'Reading text — ' + Math.round((m.progress || 0) * 100) + '%');
+          else if (onProgress) onProgress(10, m.status === 'loading tesseract core' ? 'Loading engine…' : 'Preparing — ' + m.status);
+        },
+      });
+    });
+}
+
+async function ocrToRows(src, onProgress, sharedWorker) {
+  const own = !sharedWorker;
+  const worker = sharedWorker || await makeOcrWorker(onProgress);
   const pre = await prepImage(src);
-  const worker = await window.Tesseract.createWorker('eng', 1, {
-    logger: m => {
-      if (m.status === 'recognizing text' && onProgress) onProgress(10 + (m.progress || 0) * 70, 'Reading text — ' + Math.round((m.progress || 0) * 100) + '%');
-      else if (onProgress) onProgress(10, m.status === 'loading tesseract core' ? 'Loading engine…' : 'Preparing — ' + m.status);
-    },
-  });
   const { data } = await worker.recognize(pre);
-  await worker.terminate();
+  if (own) await worker.terminate();
   const words = [];
   (data.blocks || []).forEach(b => (b.paragraphs || []).forEach(pa => (pa.lines || []).forEach(l => (l.words || []).forEach(w => {
     if (w && w.text && w.text.trim()) words.push({ x: w.bbox ? (w.bbox.x0 + w.bbox.x1) / 2 : 0, y: w.bbox ? (w.bbox.y0 + w.bbox.y1) / 2 : 0, s: w.text.trim() });
@@ -611,48 +638,96 @@ async function ocrToRows(src, onProgress) {
 
 async function ocrToText(file, onProgress) { return (await ocrToRows(file, onProgress)).text; }
 
-/* PDF: try the embedded text layer first (instant, accurate); if it's a scanned PDF, rasterize pages and OCR them */
-async function pdfBillText(file, onProgress) {
-  const pdfjs = await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', 'pdfjsLib');
-  pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+/* PDF: try the embedded text layer first (instant, accurate); if it is a scanned PDF (no text
+   layer), render the pages and OCR them. forceOcr skips the text layer entirely. */
+async function pdfBillText(file, onProgress, forceOcr) {
+  const pdfjs = await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', 'pdfjsLib', 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js');
+  pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
   const buf = await file.arrayBuffer();
-  const pdf = await pdfjs.getDocument({ data: buf }).promise;
+  const pdf = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
   let text = '';
   let rows = [];
   let needsOcr = [];
-  const maxPages = Math.min(pdf.numPages, 5);
+  const maxPages = Math.min(pdf.numPages, 6);
   for (let i = 1; i <= maxPages; i++) {
     if (onProgress) onProgress(5 + (i / maxPages) * 40, 'Page ' + i + ' / ' + maxPages + '…');
     const page = await pdf.getPage(i);
-    const tc = await page.getTextContent();
-    const pageRows = textContentToRows(tc);
+    if (forceOcr) { needsOcr.push(page); continue; }
+    let pageRows = [];
+    try {
+      const tc = await page.getTextContent();
+      pageRows = textContentToRows(tc);
+    } catch (e) { pageRows = []; }
     const pageText = pageRows.map(r => r.map(w => w.s).join(' ')).join('\n');
-    if (pageText.replace(/\s/g, '').length > 40) { text += '\n' + pageText; rows = rows.concat(pageRows); }
+    // a real text layer has a decent amount of letters — otherwise it is a scan (image inside a PDF)
+    const letters = (pageText.match(/[A-Za-z]/g) || []).length;
+    if (letters >= 30) { text += '\n' + pageText; rows = rows.concat(pageRows); }
     else needsOcr.push(page);
   }
-  for (const page of needsOcr.slice(0, 4)) {
-    if (onProgress) onProgress(50, 'Scanned page detected — reading it…');
-    const viewport = page.getViewport({ scale: 2 });
-    const canvas = document.createElement('canvas');
-    canvas.width = viewport.width; canvas.height = viewport.height;
-    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-    const o = await ocrToRows(canvas, onProgress);
-    text += '\n' + o.text;
-    rows = rows.concat(o.rows);
+  if (!forceOcr && onProgress) onProgress(48, needsOcr.length ? 'Scanned page found — reading it like a photo…' : 'Building rows…');
+  const ocrPages = needsOcr.slice(0, 4);
+  let shared = null;
+  try {
+    if (ocrPages.length) shared = await makeOcrWorker(onProgress);
+    let done = 0;
+    for (const page of ocrPages) {
+      done++;
+      if (onProgress) onProgress(50 + (done / ocrPages.length) * 30, 'Reading page ' + done + ' / ' + ocrPages.length + ' as image (OCR)…');
+      try {
+        const base = page.getViewport({ scale: 1 });
+        const scale = Math.max(1, Math.min(2, 1700 / Math.max(base.width, 1)));
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(viewport.width); canvas.height = Math.round(viewport.height);
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+        const o = await ocrToRows(canvas, onProgress, shared);
+        text += '\n' + o.text;
+        rows = rows.concat(o.rows);
+      } catch (e) { /* one bad page should not kill the whole bill */ }
+    }
+  } finally {
+    if (shared) { try { await shared.terminate(); } catch (e) { /* ignore */ } }
   }
   return { text, rows };
 }
 
-/* rebuild visual rows from pdf.js text items (same y = same row of {x, s} words) */
+/* rebuild visual rows from pdf.js text items (same y = same row of {x, s} words).
+   Many invoice PDFs put a whole line in ONE text item ("1 PVC Pipe 45.00 10 450.00") —
+   here we split it into words and estimate each word's x inside the item box, so the
+   column readers still see real positions instead of one flat blob. */
 function textContentToRows(tc) {
-  const buckets = {};
+  const words = [];
   (tc.items || []).forEach(it => {
-    const y = Math.round((it.transform[5] || 0) / 3) * 3;
-    (buckets[y] = buckets[y] || []).push({ x: it.transform[4] || 0, s: (it.str || '').trim() });
+    const str = String(it.str == null ? '' : it.str);
+    if (!str.trim()) return;
+    const x0 = it.transform ? (it.transform[4] || 0) : 0;
+    const y = it.transform ? (it.transform[5] || 0) : 0;
+    const w = Math.abs(it.width || 0);
+    const toks = str.split(/\s+/).filter(Boolean);
+    if (!toks.length) return;
+    if (toks.length === 1) { words.push({ x: x0 + w / 2, y, s: toks[0] }); return; }
+    // distribute tokens across the item box by their character offset (item.width is the full text width)
+    const total = Math.max(str.length, 1);
+    let cursor = 0;
+    toks.forEach(t => {
+      let at = str.indexOf(t, cursor);
+      if (at < 0) at = cursor;
+      cursor = at + t.length;
+      const frac = (at + t.length / 2) / total;
+      words.push({ x: x0 + w * frac, y, s: t });
+    });
   });
-  return Object.keys(buckets).sort((a, b) => b - a)
-    .map(y => buckets[y].filter(w => w.s).sort((a, b) => a.x - b.x))
-    .filter(r => r.length);
+  // cluster by y — same visual line may differ a few points (different font sizes / superscripts)
+  const sorted = words.sort((a, b) => b.y - a.y || a.x - b.x);
+  const rows = [];
+  let cur = [], base = null;
+  const tol = 4;
+  for (const w of sorted) {
+    if (base === null || Math.abs(w.y - base) <= tol) { cur.push(w); if (base === null) base = w.y; }
+    else { rows.push(cur); cur = [w]; base = w.y; }
+  }
+  if (cur.length) rows.push(cur);
+  return rows.map(r => r.sort((a, b) => a.x - b.x)).filter(r => r.length);
 }
 
 function parsePdfWords(text) {
@@ -866,7 +941,7 @@ function billFloatingNum(words, i) {
 
 /* detect the column header row (Qty / MRP / Rate / Amount) and its x positions */
 function detectBillColumns(rows) {
-  for (let i = 0; i < Math.min(rows.length, 8); i++) {
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
     const raw = rows[i] || [];
     // a real header row has almost no plain numbers — an item line like "MRP:450 Qty 2" must not be mistaken for one
     const numCount = raw.filter(w => billNumWord(String(w.s).replace(/[^0-9.,]/g, '')) || /^\d/.test(String(w.s))).length;
@@ -875,10 +950,10 @@ function detectBillColumns(rows) {
     raw.forEach(w => {
       const t = String(w.s).toLowerCase().replace(/[^a-z0-9]/g, '');
       if (!t || t.length > 16) return;
-      if (qtyX < 0 && /(qty|quantit|^pcs|^nos|^units?$|^stock$)/.test(t)) qtyX = w.x;
+      if (qtyX < 0 && /(qty|quantit|^qt$|^pcs|^nos|^units?$|^stock$)/.test(t)) qtyX = w.x;
       else if (mrpX < 0 && /mrp/.test(t)) mrpX = w.x;
       else if (rateX < 0 && /^(rate|price|unitprice|rateper)/.test(t)) rateX = w.x;
-      else if (amtX < 0 && /^(amt|amount|value|total|net)/.test(t)) amtX = w.x;
+      else if (amtX < 0 && /^(am|amt|amount|value|total|net)/.test(t)) amtX = w.x;
     });
     if (qtyX >= 0 && (mrpX >= 0 || rateX >= 0 || amtX >= 0)) {
       return { hdrIdx: i, qtyX, mrpX, rateX, amtX };
@@ -897,11 +972,13 @@ function parseRowByColumns(words, cols) {
   // name = words left of the FIRST numeric column (qty may sit right of MRP/Rate!)
   const nameCut = Math.min.apply(null, [cols.qtyX, cols.mrpX, cols.rateX, cols.amtX].filter(x => x >= 0)) - 25;
   const nameToks = [];
-  words.forEach(w => {
+  words.forEach((w, i) => {
     const t = w.s.replace(/^[.\-:–—,()|]+|[.\-:–—,()|]+$/g, '');
     if (!t) return;
-    if (BILL_MRP_TOKEN_RE.test(t)) return;
+    if (BILL_MRP_TOKEN_RE.test(t) || /^(qty|quantity|amount|amt|total|rate|price|hsn|gst|gstin)$/i.test(t)) return;
     if (BILL_CURR_WORDS.test(t) || BILL_UNIT_WORDS.test(t) || /^[x×@]$/i.test(t)) return;
+    if (/^\d[\d,]*(?:\.\d+)?$/.test(t)) return;                 // a number is never part of the product name
+    if (/^\d{1,5}\s*[x×]$/i.test(t)) return;
     if (w.x < nameCut) nameToks.push(t);
   });
   let name = nameToks.join(' ').replace(/\s{2,}/g, ' ').trim();
@@ -915,7 +992,12 @@ function parseRowByColumns(words, cols) {
   if (!(qty > 0) || qty > 100000) return null;
   // price = MRP column first, then Rate/Price, then Amount
   const used = new Set([qn.i]);
-  let price = 0;
+  let price = 0, amount = 0;
+  // the Amount column value (used to sanity-check the row: qty x price must equal amount)
+  if (cols.amtX >= 0) {
+    const ac = nums.filter(n => !used.has(n.i)).sort((a, b) => Math.abs(a.x - cols.amtX) - Math.abs(b.x - cols.amtX))[0];
+    if (ac && Math.abs(ac.x - cols.amtX) <= 55 && ac.v < 10000000) amount = ac.v;
+  }
   const targets = [[cols.mrpX, false], [cols.rateX, false], [cols.amtX, true]].filter(t => t[0] >= 0);
   for (const pair of targets) {
     const X = pair[0], isAmt = pair[1];
@@ -929,13 +1011,14 @@ function parseRowByColumns(words, cols) {
     used.add(cand.i);
     break;
   }
-  return { name: name.slice(0, 60), qty, price: price || 0 };
+  return { name: name.slice(0, 60), qty, price: price || 0, amount };
 }
 
 /* heuristic line reader — "4 x 190", "5 nos @ 220", "qty:3 ... 1,234.50" patterns */
 function parseRowHeuristic(words) {
+  // every standalone number counts (OCR often writes garbage right after a real number)
   const numIdx = [];
-  words.forEach((w, i) => { if (billNumWord(w.s) && billFloatingNum(words, i)) numIdx.push(i); });
+  words.forEach((w, i) => { if (billNumWord(w.s)) numIdx.push(i); });
   if (!numIdx.length) return null;
 
   // 0) labeled numbers: "MRP 450" / "Rate 380" — capture BEFORE name building so neither the label nor its number leaks into the name
@@ -954,7 +1037,7 @@ function parseRowHeuristic(words) {
   words.forEach((w, i) => {
     const t = w.s.replace(/^[.\-:–—,()|]+|[.\-:–—,()|]+$/g, '');
     if (!t || numIdx.indexOf(i) >= 0 || labeledIdx.has(i)) return;
-    if (BILL_MRP_TOKEN_RE.test(t) || /^(qty|quantity)$/i.test(t)) return;
+    if (BILL_MRP_TOKEN_RE.test(t) || /^(qty|quantity|amount|amt|total|rate|price)$/i.test(t)) return;
     if (BILL_CURR_WORDS.test(t) || BILL_UNIT_WORDS.test(t) || /^[x×@]$/i.test(t)) return;
     if (/^(qty|quantity)[:=].*\d/i.test(t)) return;            // "qty:5" glued
     if (/^\d[\d,]*(?:\.\d+)?$/.test(t) && billFloatingNum(words, i)) return;   // floating number — not part of name
@@ -966,7 +1049,24 @@ function parseRowHeuristic(words) {
   if (!/[a-z]/i.test(name) || name.replace(/[^a-z]/gi, '').length < 2) return null;
 
   const val = i => billParseNum(words[i].s);
-  let qty = 0, amount = 0, qtySrc = '', pairPrice = 0;
+  let qty = 0, amount = 0, qtySrc = '', pairPrice = 0, tripPrice = 0;
+  // 0.5) strongest generic pattern: the last three numbers satisfy qty x rate = amount.
+  //      Works for PDFs where a whole row is one text blob and has no usable x positions:
+  //      "1 PVC Pipe 40mm 45.00 10 450.00" -> price 45, qty 10
+  if (numIdx.length >= 3) {
+    const a = val(numIdx[numIdx.length - 3]);
+    const b = val(numIdx[numIdx.length - 2]);
+    const c = val(numIdx[numIdx.length - 1]);
+    const prod = a * b;
+    if (c > 0 && prod > 0 && c < 10000000 && Math.abs(prod - c) <= Math.max(1, c * 0.02)) {
+      const aInt = Math.round(a) === a, bInt = Math.round(b) === b;
+      let q, p;
+      if (aInt && !bInt) { q = a; p = b; }
+      else if (bInt && !aInt) { q = b; p = a; }
+      else { q = Math.min(a, b); p = Math.max(a, b); }
+      if (q > 0 && q <= 100000 && p > 0) { qty = q; tripPrice = p; amount = c; qtySrc = 'triplet'; }
+    }
+  }
   // 1) "Qty 5" / "Qty: 5" keyword right before a number, incl. glued "qty:5"
   for (const i of numIdx.slice()) {
     const prev = ((words[i - 1] || {}).s || '').trim();
@@ -1009,17 +1109,21 @@ function parseRowHeuristic(words) {
   }
   // amount = right-most remaining number
   if (numIdx.length) amount = val(numIdx[numIdx.length - 1]);
-  // still no qty? the left-most plausible integer is the qty
+  // still no qty? a lone number is a price (qty 1); otherwise the left-most plausible integer is the qty
   if (!qty) {
-    const qCand = numIdx.map(val).filter(v => v === Math.round(v) && v >= 1 && v <= 2000);
-    if (qCand.length) { qty = qCand[0]; qtySrc = 'bare'; }
+    if (numIdx.length === 1) { qty = 1; qtySrc = 'single'; }
+    else {
+      const qCand = numIdx.map(val).filter(v => v === Math.round(v) && v >= 1 && v <= 2000);
+      if (qCand.length) { qty = qCand[0]; qtySrc = 'bare'; }
+    }
   }
   if (!qty && !amount) return null;
   if (!qty) { qty = 1; qtySrc = qtySrc || 'bare'; }
-  // price: explicit MRP label > Rate label > pair price > unit-word amount > computed
+  // price: explicit MRP label > Rate label > qty x rate = amount triplet > pair price > unit-word amount > computed
   let price = 0;
   if (mrpVal) price = mrpVal;
   else if (rateVal) price = rateVal;
+  else if (qtySrc === 'triplet') price = tripPrice;
   else if (qtySrc === 'pair') price = pairPrice;
   else if (qtySrc === 'unit') price = amount;
   else if (amount) {
@@ -1028,7 +1132,17 @@ function parseRowHeuristic(words) {
     else price = (qty > 1 && per >= 100 && per < amount) ? per : amount;   // bare "name 3 1,234.50" → 1,234.50 is likely the line total
   }
   if (price >= 10000000) price = 0;
-  return { name: name.slice(0, 60), qty: qty > 100000 ? 1 : qty, price: price || 0 };
+  return { name: name.slice(0, 60), qty: qty > 100000 ? 1 : qty, price: price || 0, amount: amount || 0 };
+}
+
+/* how trustworthy is a parsed row? 2 = qty x price matches the amount column, 1 = plausible, 0 = mismatch */
+function billRowScore(it) {
+  if (!it) return -1;
+  if (it.qty > 0 && it.price > 0 && it.amount > 0) {
+    const diff = Math.abs(it.qty * it.price - it.amount);
+    return diff <= Math.max(2, it.amount * 0.02) ? 2 : 0;
+  }
+  return (it.qty > 0 && it.price > 0) ? 1 : (it.qty > 0 ? 1 : -1);
 }
 
 function parseBillRows(rows) {
@@ -1042,9 +1156,25 @@ function parseBillRows(rows) {
     if (words.length < 2) continue;
     const lineText = words.map(w => w.s).join(' ');
     if (BILL_SKIP_RE.test(lineText)) continue;
-    let it = cols ? parseRowByColumns(words, cols) : null;
-    if (!it) it = parseRowHeuristic(words);
-    if (it) { items.push(it); if (items.length >= 40) break; }
+    let itC = cols ? parseRowByColumns(words, cols) : null;
+    let itH = parseRowHeuristic(words);
+    // pick the reading that adds up (qty x price = amount); columns win ties
+    let it = itC;
+    const sC = billRowScore(itC), sH = billRowScore(itH);
+    if (sH > sC) it = itH;
+    else if (!itC) it = itH;
+    if (!it) {
+      // wrapped product name on its own line ("PVC Pipe 40mm" under the first line) → join to the row above
+      const hasDigit = /\d/.test(lineText);
+      const leftOfTable = !!cols && words.every(w => w.x < cols.qtyX - 5);
+      if (cols && items.length && !hasDigit && leftOfTable && lineText.replace(/[^a-z]/gi, '').length >= 3 && lineText.length <= 45) {
+        const last = items[items.length - 1];
+        last.name = (last.name + ' ' + lineText).replace(/\s{2,}/g, ' ').slice(0, 80);
+      }
+      continue;
+    }
+    items.push(it);
+    if (items.length >= 40) break;
   }
   return items;
 }
@@ -1078,46 +1208,13 @@ function parseBillItems(text) {
     line = line.replace(/^\s*\d{1,3}[.)]\s+/, '');              // leading list serial "1." "2)"
     if (line.length < 3 || !/\d/.test(line)) continue;          // no numbers → header/footer text
     if (BILL_SKIP_RE.test(line)) continue;
-    const pairM = line.match(BILL_PAIR_RE);
-    let qtyM = line.match(BILL_QTY_RE);
-    if (!qtyM) qtyM = line.match(BILL_QTY_REV_RE);
-    const numsMatch = standaloneNumbers(line);
-    if (!pairM && !qtyM && numsMatch.length < 2) continue;      // need qty + price signals
-    // name = tokens that are not pure numbers / qty words / currency
-    const toks = line.split(' ');
-    const nameToks = [];
-    toks.forEach((tok, ti) => {
-      const t = tok.replace(/^[.\-:–—,()]+|[.\-:–—,()]+$/g, '');
-      if (!t) return;
-      if (BILL_MRP_TOKEN_RE.test(t)) return;                    // "MRP" label word
-      if (/^(qty\.?|quantity|nos|pcs|units?|boxes?|packs?|pairs?|x|×|@|rs\.?|inr|₹|\$)$/i.test(t)) return;
-      if (/^\d{1,3}[.)]$/.test(t)) return;                      // leftover serial "4." anywhere
-      if (/^\d+(?:[.,]\d+)*$/.test(t)) return;                  // pure number → not part of name
-      if (/^\d{1,5}\s*[x×]$/i.test(t)) return;                  // "10x" / "10 x" merged by OCR
-      if (/^\d+(?:\.\d+)?%$/.test(t)) return;                   // "18%" GST rate
-      nameToks.push(t);
-    });
-    let name = nameToks.join(' ').replace(/\s{2,}/g, ' ').trim();
-    if (!/[a-z]/i.test(name) || name.length < 3) continue;
-    let qty = 0, price = 0;
-    const pickPrice = (q) => {
-      const CAND = numsMatch.filter(n => n > 0);
-      const last = CAND[CAND.length - 1];
-      if (last == null) return 0;
-      return (q > 1 && last % q === 0 && last / q < last) ? last / q : last;
-    };
-    const mrpM = line.match(BILL_MRP_RE);
-    if (pairM) { qty = parseInt(pairM[1]); price = parseFloat(pairM[2].replace(/,/g, '')); }
-    else if (mrpM) {
-      price = parseFloat(mrpM[1].replace(/,/g, ''));
-      if (qtyM) qty = parseInt(qtyM[1]);
-      else qty = numsMatch.find(n => n === Math.round(n) && n >= 1 && n <= 2000 && n !== price) || 0;
-      if (!qty) continue;
-    }
-    else if (qtyM) { qty = parseInt(qtyM[1]); price = pickPrice(qty); }
-    else { qty = numsMatch.find(n => n <= 9999) || 0; if (!qty) continue; price = pickPrice(qty); }
-    if (qty <= 0) qty = 1;
-    items.push({ name: name.slice(0, 60), qty, price: price || 0 });
+    let words = line.split(/\s+/).filter(Boolean).map(s => ({ x: 0, s: s }));
+    words = words.reduce((acc, w) => acc.concat(billSplitWord(w)), []);
+    if (words.length < 2) continue;
+    // same smart reader as the image/PDF row path (qty/rate/amount, MRP, pairs, units, triplets)
+    const it = parseRowHeuristic(words);
+    if (!it) continue;
+    items.push({ name: it.name.slice(0, 60), qty: it.qty, price: it.price });
     if (items.length >= 40) break;
   }
   return items;
@@ -1313,7 +1410,7 @@ function addStockEntry({ productId, name, sku, category, unitPrice, costPrice, b
     isNew = true;
   }
   product.quantity = (product.quantity || 0) + qty;
-  if (name) product.name = name;
+  if (name && isNew) product.name = name;              // never rename an existing product from a bill's spelling
   if (category) product.category = category;
   if (num(unitPrice)) product.unitPrice = num(unitPrice);
   if (num(costPrice)) product.costPrice = num(costPrice);
@@ -1675,8 +1772,8 @@ async function onFmtTemplateChange(input) {
 
 /* convert first page of a PDF to a JPEG dataURL using pdf.js */
 async function pdfPageToImage(file, scale) {
-  const pdfjs = await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', 'pdfjsLib');
-  pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const pdfjs = await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', 'pdfjsLib', 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js');
+  pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
   const buf = await file.arrayBuffer();
   const pdf = await pdfjs.getDocument({ data: buf }).promise;
   const page = await pdf.getPage(1);
