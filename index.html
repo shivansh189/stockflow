@@ -379,6 +379,17 @@
             <input id="fmt-footer" type="text" placeholder="e.g. Thank you! No exchange without bill.">
             <p class="hint">Prints at the bottom of the bill</p>
           </div>
+          <div class="field" style="grid-column:1/-1">
+            <label>📄 Bill Template (PDF ya photo) — optional</label>
+            <input id="fmt-template" type="file" accept="application/pdf,image/png,image/jpeg,image/webp" onchange="onFmtTemplateChange(this)">
+            <p class="hint">Apne printed bill ka blank PDF / photo daalo — bill ke details (no., customer, items) isi ke upar print honge. Alag format GST aur Non-GST ke liye — bas alag format banao aur "Default for" tick karo.</p>
+            <div id="fmt-template-preview" style="margin-top:8px"></div>
+          </div>
+          <div class="field" style="grid-column:1/-1">
+            <label>Template par content kahan se shuru ho (top se %)</label>
+            <input id="fmt-tmpl-top" type="number" min="0" max="90" step="1" value="40">
+            <p class="hint">Bill ka data template ke kitne % niche se print hoga (40 = beech me). Template me upar heading hoti hai to 30-35 rakho.</p>
+          </div>
         </div>
         <div class="form-grid">
           <div class="field">
@@ -437,7 +448,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=2"></script>
   <script src="cloud.js?v=4"></script>
-  <script src="app.js?v=16"></script>
+  <script src="app.js?v=17"></script>
   <script>
     try {
       if ('serviceWorker' in navigator && location.protocol !== 'file:') {

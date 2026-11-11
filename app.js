@@ -94,6 +94,7 @@ function saveState() {
 function migrateState() {
   // older bills had no type — they were all GST invoices
   state.invoices.forEach(inv => { if (!inv.mode) inv.mode = 'gst'; });
+  if (!state.manualSales) state.manualSales = [];
   // keep exactly one default per bill type
   const g = state.billFormats.filter(f => f.isDefaultGst);
   const n = state.billFormats.filter(f => f.isDefaultNg);
@@ -254,8 +255,11 @@ function renderDashboard() {
   const monthStr = new Date().toISOString().slice(0, 7);
   const validInvoices = state.invoices.filter(i => i.status !== 'cancelled');
   const unpaid = validInvoices.filter(i => i.status === 'unpaid');
-  const todaySales = validInvoices.filter(i => (i.date || '').slice(0, 10) === todayStr).reduce((s, i) => s + i.total, 0);
-  const monthSales = validInvoices.filter(i => (i.date || '').slice(0, 7) === monthStr).reduce((s, i) => s + i.total, 0);
+  const manualSales = state.manualSales || [];
+  const manualToday = manualSales.filter(s => (s.date || '').slice(0, 10) === todayStr).reduce((s, x) => s + (x.amount || 0), 0);
+  const manualMonth = manualSales.filter(s => (s.date || '').slice(0, 7) === monthStr).reduce((s, x) => s + (x.amount || 0), 0);
+  const todaySales = validInvoices.filter(i => (i.date || '').slice(0, 10) === todayStr).reduce((s, i) => s + i.total, 0) + manualToday;
+  const monthSales = validInvoices.filter(i => (i.date || '').slice(0, 7) === monthStr).reduce((s, i) => s + i.total, 0) + manualMonth;
   const monthPurchases = (state.purchases || []).filter(pu => (pu.date || '').slice(0, 7) === monthStr).reduce((s, pu) => s + (pu.total || 0), 0);
   const monthProfit = monthlyProfitEstimate(monthStr);
 
@@ -1316,6 +1320,15 @@ function renderDeduct() {
       <p class="hint">For billing customers use 🧾 Bills instead — invoices deduct stock automatically</p>
     </div>
     <div class="field"><label>Note (optional)</label><input id="deduct-note" type="text" placeholder="e.g. Sold to Ramesh"></div>
+    <div class="field" style="grid-column:1/-1">
+      <label style="display:flex;gap:8px;align-items:center"><input id="deduct-count-sale" type="checkbox" onchange="toggleDeductSale()"> 💰 Deduct from stock <b>and</b> count in Today's Sales</label>
+      <p class="hint">Direct sale (bina bill ke) — stock katega aur amount aaj ki sale me jud jayega</p>
+    </div>
+    <div class="field" id="deduct-sale-amt-wrap" hidden>
+      <label>Sale Amount ₹</label>
+      <input id="deduct-sale-amount" type="number" min="0" step="0.01" value="0" inputmode="decimal">
+      <p class="hint">Customer ne jitna paisa diya (0 chhodoge to product ka rate use hoga)</p>
+    </div>
     <button type="submit" class="btn btn-danger btn-lg">➖ Deduct from Stock</button>
   </form>`;
   setTopbarActions('');
@@ -1414,9 +1427,10 @@ function renderBillFormatsTab() {
     html += `<div class="card party-card">
       <div class="party-head">
         <div>
-          <div class="strong">${esc(f.name)} ${modeBadge} ${defBadge}${defBadgeNg}</div>
-          <div class="muted" style="font-size:12px">${esc(f.shopName || 'Shop name not set')}${f.gstin && f.mode !== 'nongst' ? ' · GSTIN ' + esc(f.gstin) : ''}${f.prefix ? ' · Bill no. starts with ' + esc(f.prefix) : ''}</div>
+          <div class="strong">${esc(f.name)} ${modeBadge} ${defBadge}${defBadgeNg}${f.templateImage ? ' <span class="badge badge-info">📄 Template</span>' : ''}</div>
+          <div class="muted" style="font-size:12px">${esc(f.shopName || 'Shop name not set')}${f.gstin && f.mode !== 'nongst' ? ' · GSTIN ' + esc(f.gstin) : ''}${f.prefix ? ' · Bill no. starts with ' + esc(f.prefix) : ''}${f.templateImage ? ' · ' + esc(f.templateName || 'template') : ''}</div>
         </div>
+        ${f.templateImage ? `<img src="${f.templateImage}" style="max-width:56px;max-height:76px;border:1px solid #ddd;border-radius:6px;background:#fff">` : ''}
       </div>
       <div class="row-actions" style="margin-top:10px">
         <button class="btn btn-sm" data-action="format-edit" data-id="${f.id}">✏️ Edit</button>
@@ -1432,6 +1446,7 @@ function renderBillFormatsTab() {
 
 function openBillFormatModal(f) {
   editingFormatId = f ? f.id : null;
+  fmtTemplateDraft = undefined;
   document.getElementById('bf-title').textContent = f ? '⚙️ Edit Bill Format' : '⚙️ New Bill Format';
   document.getElementById('fmt-name').value = f ? (f.name || '') : '';
   document.getElementById('fmt-mode').value = f ? (f.mode || 'both') : 'both';
@@ -1444,7 +1459,92 @@ function openBillFormatModal(f) {
   document.getElementById('fmt-footer').value = f ? (f.footer || '') : '';
   document.getElementById('fmt-def-gst').checked = !!(f && f.isDefaultGst);
   document.getElementById('fmt-def-ng').checked = !!(f && f.isDefaultNg);
+  document.getElementById('fmt-tmpl-top').value = f && f.tmplTop ? f.tmplTop : 40;
+  const fin = document.getElementById('fmt-template');
+  if (fin) fin.value = '';
+  renderFmtTemplatePreview(f && f.templateImage ? f : null);
   document.getElementById('modal-billformat').removeAttribute('hidden');
+}
+
+/* ---- bill template (PDF / image) ---- */
+let fmtTemplateDraft = undefined; // undefined = untouched, null = removed, {dataURL, name} = new
+
+function renderFmtTemplatePreview(f) {
+  const host = document.getElementById('fmt-template-preview');
+  if (!host) return;
+  if (f && f.templateImage) {
+    host.innerHTML = `<div style="display:flex;align-items:center;gap:10px"><img src="${f.templateImage}" style="max-width:120px;max-height:160px;border:1px solid #ddd;border-radius:6px;background:#fff"><div><div class="strong" style="font-size:13px">📄 ${esc(f.templateName || 'Template set')}</div><button type="button" class="btn btn-sm btn-danger" style="margin-top:6px" onclick="clearFmtTemplate()">🗑 Remove template</button></div></div>`;
+  } else {
+    host.innerHTML = '';
+  }
+}
+
+function clearFmtTemplate() {
+  fmtTemplateDraft = null;
+  renderFmtTemplatePreview(null);
+  const fin = document.getElementById('fmt-template');
+  if (fin) fin.value = '';
+  toast('Template removed — normal bill print hoga', 'info');
+}
+
+async function onFmtTemplateChange(input) {
+  const file = input && input.files && input.files[0];
+  if (!file) return;
+  const maxBytes = 8 * 1024 * 1024;
+  if (file.size > maxBytes) { toast('File is too big (max 8 MB)', 'error'); input.value = ''; return; }
+  toast('Template load ho raha hai…', 'info');
+  try {
+    let dataURL;
+    if (/\.pdf$/i.test(file.name) || file.type === 'application/pdf') {
+      dataURL = await pdfPageToImage(file, 1.5);
+    } else {
+      const raw = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => reject(new Error('read failed'));
+        r.readAsDataURL(file);
+      });
+      dataURL = await resizeImageDataURL(raw, 1200);
+    }
+    fmtTemplateDraft = { dataURL, name: file.name };
+    renderFmtTemplatePreview({ templateImage: dataURL, templateName: file.name });
+    toast('✅ Template ready — Save Format dabao', 'info');
+  } catch (err) {
+    toast('Template load nahi hua: ' + err.message, 'error');
+    input.value = '';
+  }
+}
+
+/* convert first page of a PDF to a JPEG dataURL using pdf.js */
+async function pdfPageToImage(file, scale) {
+  const pdfjs = await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', 'pdfjsLib');
+  pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjs.getDocument({ data: buf }).promise;
+  const page = await pdf.getPage(1);
+  const viewport = page.getViewport({ scale: scale || 1.5 });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(viewport.width);
+  canvas.height = Math.round(viewport.height);
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+  return canvas.toDataURL('image/jpeg', 0.85);
+}
+
+/* shrink an image dataURL so big camera photos don't blow up localStorage */
+function resizeImageDataURL(dataURL, maxW) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      if (img.width <= maxW) { resolve(dataURL); return; }
+      const c = document.createElement('canvas');
+      c.width = maxW;
+      c.height = Math.round(img.height * (maxW / img.width));
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      resolve(c.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = () => resolve(dataURL);
+    img.src = dataURL;
+  });
 }
 
 function closeBillFormatModal() {
@@ -1469,7 +1569,16 @@ function handleBillFormatSave(e) {
     footer: document.getElementById('fmt-footer').value.trim(),
     isDefaultGst: document.getElementById('fmt-def-gst').checked,
     isDefaultNg: document.getElementById('fmt-def-ng').checked,
+    tmplTop: num(document.getElementById('fmt-tmpl-top').value) || 40,
   };
+  // template: keep existing unless changed/removed
+  if (fmtTemplateDraft === null) { f.templateImage = ''; f.templateName = ''; }
+  else if (fmtTemplateDraft && fmtTemplateDraft.dataURL) { f.templateImage = fmtTemplateDraft.dataURL; f.templateName = fmtTemplateDraft.name; }
+  else if (editingFormatId) {
+    const ex = billFormatById(editingFormatId);
+    f.templateImage = ex ? (ex.templateImage || '') : '';
+    f.templateName = ex ? (ex.templateName || '') : '';
+  } else { f.templateImage = ''; f.templateName = ''; }
   // only one default per bill type
   if (f.isDefaultGst) (state.billFormats || []).forEach(x => { if (x.id !== f.id) delete x.isDefaultGst; });
   if (f.isDefaultNg) (state.billFormats || []).forEach(x => { if (x.id !== f.id) delete x.isDefaultNg; });
@@ -1480,7 +1589,7 @@ function handleBillFormatSave(e) {
   closeBillFormatModal();
   billingTab = 'formats';
   render();
-  showSuccess('✅ Bill Format Saved!', `${f.name} — bills will now print with your shop details`, 'billing');
+  showSuccess('✅ Bill Format Saved!', `${f.name} — bills will now print with your shop details${f.templateImage ? ' · apne template par 📄' : ''}`, 'billing');
 }
 
 function printInvoice(id) {
@@ -1497,24 +1606,37 @@ function printInvoice(id) {
   if (isGst && fmt && fmt.gstin) shopLines.push('GSTIN: ' + esc(fmt.gstin));
   const footer = (fmt && fmt.footer) ? esc(fmt.footer) : 'Thank you for your business!';
   const billTitle = isGst ? 'GST Invoice / Bill' : 'Bill / Memo (No GST)';
-  let html = `<div style="font-family:Arial,sans-serif;padding:20px;color:#000">
-    <h2 style="margin:0">${shopName}</h2>
-    ${shopLines.length ? `<div style="font-size:12px;line-height:1.5;margin:2px 0 8px">${shopLines.join('<br>')}</div>` : ''}
-    <div style="margin-bottom:10px;font-weight:600">${billTitle}</div>
+  const dataBlock = `
     <div style="display:flex;justify-content:space-between">
       <div><strong>Bill No:</strong> ${esc(inv.invoiceNo)}</div>
       <div><strong>Date:</strong> ${fmtDate(inv.date)}</div>
     </div>
-    <div style="margin:12px 0"><strong>Customer:</strong> ${esc(inv.customerName)}</div>
+    <div style="margin:10px 0"><strong>Customer:</strong> ${esc(inv.customerName)}</div>
     <table style="width:100%;border-collapse:collapse;margin-top:8px">
       <tr style="background:#eee"><th style="border:1px solid #999;padding:4px">Product</th><th style="border:1px solid #999;padding:4px">Qty</th><th style="border:1px solid #999;padding:4px">Rate</th>${isGst ? '<th style="border:1px solid #999;padding:4px">GST</th>' : ''}<th style="border:1px solid #999;padding:4px">Amount</th></tr>
-      ${lines.map(l => `<tr><td style="border:1px solid #999;padding:4px">${esc(l.name)}</td><td style="border:1px solid #999;padding:4px">${l.qty}</td><td style="border:1px solid #999;padding:4px">${fmtMoney(l.unitPrice)}</td>${isGst ? `<td style="border:1px solid #999;padding:4px">${l.gstRate}%</td>` : ''}<td style="border:1px solid #999;padding:4px">${fmtMoney(l.qty * l.unitPrice - (l.discount||0))}</td></tr>`).join('')}
+      ${lines.map(l => `<tr><td style="border:1px solid #999;padding:4px">${esc(l.name)}</td><td style="border:1px solid #999;padding:4px">${l.qty}</td><td style="border:1px solid #999;padding:4px">${fmtMoney(l.unitPrice)}</td>${isGst ? `<td style="border:1px solid #999;padding:4px">${l.gstRate}%</td>` : ''}<td style="border:1px solid #999;padding:4px">${fmtMoney(l.qty * l.unitPrice - (l.discount||0))}${l.discountPct ? `<div style="font-size:10px">(${l.discountPct}% off)</div>` : ''}</td></tr>`).join('')}
     </table>
     <div style="margin-top:10px;text-align:right">
       <div>Subtotal: ${fmtMoney(inv.subtotal)} &nbsp; ${isGst ? 'GST: ' + fmtMoney(inv.gst) + ' &nbsp; ' : ''}Discount: ${fmtMoney(inv.discountTotal)} &nbsp; <strong>Total: ${fmtMoney(inv.total)}</strong></div>
     </div>
+    <div style="margin-top:14px;font-size:12px">${footer}</div>`;
+  let html;
+  if (fmt && fmt.templateImage) {
+    // print on the user's own bill template: template as full-page background, data overlaid
+    const topPct = fmt.tmplTop || 40;
+    html = `<div style="position:relative;width:200mm;min-height:280mm;font-family:Arial,sans-serif;color:#000">
+      <img src="${fmt.templateImage}" style="position:absolute;top:0;left:0;width:100%;z-index:0">
+      <div style="position:absolute;left:10%;right:10%;top:${topPct}%;z-index:1">${dataBlock}</div>
+    </div>`;
+  } else {
+    html = `<div style="font-family:Arial,sans-serif;padding:20px;color:#000">
+    <h2 style="margin:0">${shopName}</h2>
+    ${shopLines.length ? `<div style="font-size:12px;line-height:1.5;margin:2px 0 8px">${shopLines.join('<br>')}</div>` : ''}
+    <div style="margin-bottom:10px;font-weight:600">${billTitle}</div>
+    ${dataBlock}
     <div style="margin-top:20px">${footer}${fmt && fmt.phone ? '<div style="font-size:11px;margin-top:6px">For queries contact: ' + esc(fmt.phone) + '</div>' : ''}</div>
   </div>`;
+  }
   document.getElementById('print-area').innerHTML = html;
   document.getElementById('print-area').classList.remove('hidden');
   window.print();
@@ -1547,7 +1669,7 @@ function openInvoiceModal(invoice, forceMode) {
     const activeId = invoice ? (invoice.formatId || '') : ((defFmt && defFmt.id) || '');
     sel.innerHTML = '<option value="">No format — plain bill</option>' + fmtOpts.map(f => `<option value="${f.id}" ${f.id === activeId ? 'selected' : ''}>${esc(f.name)}</option>`).join('');
   }
-  invoiceLines = (invoice && invoice.items && invoice.items.length) ? invoice.items.map(i => ({ productId: i.productId || '', qty: i.qty || 0, unitPrice: i.unitPrice || 0, gstRate: invoiceMode === 'gst' ? (i.gstRate || 18) : 0, discount: i.discount || 0 })) : [ { productId: '', qty: 1, unitPrice: 0, gstRate: invoiceMode === 'gst' ? (defFmt && defFmt.defaultGst ? defFmt.defaultGst : 18) : 0, discount: 0 } ];
+  invoiceLines = (invoice && invoice.items && invoice.items.length) ? invoice.items.map(i => ({ productId: i.productId || '', name: i.name || '', qty: i.qty || 0, unitPrice: i.unitPrice || 0, gstRate: invoiceMode === 'gst' ? (i.gstRate || 18) : 0, discount: i.discount || 0, discountPct: i.discountPct != null ? i.discountPct : (i.discount && i.qty * i.unitPrice > 0 ? +((i.discount / (i.qty * i.unitPrice)) * 100).toFixed(2) : 0) })) : [ { productId: '', qty: 1, unitPrice: 0, gstRate: invoiceMode === 'gst' ? (defFmt && defFmt.defaultGst ? defFmt.defaultGst : 18) : 0, discount: 0, discountPct: 0 } ];
   renderInvoiceLines();
   computeInvoiceTotals();
   document.getElementById('modal-invoice').removeAttribute('hidden');
@@ -1563,9 +1685,10 @@ function suggestBillNo(mode, fmt) {
 
 function closeInvoiceModal() { document.getElementById('modal-invoice').setAttribute('hidden', ''); editingProductId = null; }
 
-let invoiceLines = [ { productId: '', qty: 1, unitPrice: 0, gstRate: 18, discount: 0 } ];
+let invoiceLines = [ { productId: '', qty: 1, unitPrice: 0, gstRate: 18, discount: 0, discountPct: 0 } ];
 let invoiceMode = 'gst';
 let partyTab = 'customers';
+let partyQuery = '';
 
 /* ------- searchable product picker (input + native datalist) ------- */
 function ensureProductDatalist() {
@@ -1604,7 +1727,7 @@ function renderInvoiceLines() {
       <div class="il-cell"><label>Qty</label><input class="line-qty" type="number" min="1" step="1" value="${it.qty || 1}" inputmode="numeric" placeholder="1"></div>
       <div class="il-cell"><label>Rate ₹</label><input class="line-price" type="number" min="0" step="0.01" value="${it.unitPrice || 0}" inputmode="decimal" placeholder="0.00"></div>
       ${gstCell}
-      <div class="il-cell"><label>Disc ₹</label><input class="line-discount" type="number" min="0" step="0.01" value="${it.discount || 0}" inputmode="decimal" placeholder="0"></div>
+      <div class="il-cell"><label>Disc %</label><input class="line-discpct" type="number" min="0" max="100" step="0.01" value="${it.discountPct != null ? it.discountPct : 0}" inputmode="decimal" placeholder="0"></div>
       <div class="il-cell"><label>Amount</label><div class="line-amt">0.00</div></div>
       <div class="il-cell il-del"><label>&nbsp;</label><button type="button" class="btn btn-sm btn-danger line-remove" data-action="invoice-line-remove" title="Remove this item">✕</button></div>`;
     host.appendChild(row);
@@ -1654,7 +1777,9 @@ function syncInvoiceLines() {
     l.unitPrice = num(row.querySelector('.line-price').value);
     const gstEl = row.querySelector('.line-gst');
     l.gstRate = invoiceMode === 'gst' && gstEl ? num(gstEl.value) : 0;
-    l.discount = num(row.querySelector('.line-discount').value);
+    const pctEl = row.querySelector('.line-discpct');
+    l.discountPct = pctEl ? num(pctEl.value) : (l.discountPct || 0);
+    l.discount = Math.round((l.discountPct / 100) * l.qty * l.unitPrice * 100) / 100;
   });
 }
 
@@ -1676,7 +1801,7 @@ function computeInvoiceTotals() {
 
 function handleInvoiceSave(e) {
   e.preventDefault();
-  const lines = invoiceLines.map(l => ({ productId: l.productId, name: l.name || '', qty: num(l.qty), unitPrice: num(l.unitPrice), gstRate: invoiceMode === 'gst' ? num(l.gstRate) : 0, discount: num(l.discount) })).filter(l => (l.productId || (l.name || '').trim()) && l.qty > 0);
+  const lines = invoiceLines.map(l => ({ productId: l.productId, name: l.name || '', qty: num(l.qty), unitPrice: num(l.unitPrice), gstRate: invoiceMode === 'gst' ? num(l.gstRate) : 0, discount: num(l.discount), discountPct: num(l.discountPct) })).filter(l => (l.productId || (l.name || '').trim()) && l.qty > 0);
   if (lines.length === 0) { toast('Add at least one item — stock se pick karo ya koi bhi naam type karo', 'error'); return; }
   const { subtotal, gst, discountTotal, total } = computeInvoiceTotals();
   const customer = state.parties.find(p => p.id === (document.getElementById('inv-customer').value || '')) || null;
@@ -1689,7 +1814,7 @@ function handleInvoiceSave(e) {
     customerId: customer ? customer.id : null,
     customerName: customer ? customer.name : 'Walk-in Customer',
     date: new Date(document.getElementById('inv-date').value || new Date().toISOString().slice(0, 10)).toISOString(),
-    items: lines.map(l => ({ productId: l.productId || null, name: (state.products.find(p => p.id === l.productId) || {}).name || l.name || 'Item', qty: l.qty, unitPrice: l.unitPrice, gstRate: l.gstRate, discount: l.discount })),
+    items: lines.map(l => ({ productId: l.productId || null, name: (state.products.find(p => p.id === l.productId) || {}).name || l.name || 'Item', qty: l.qty, unitPrice: l.unitPrice, gstRate: l.gstRate, discount: l.discount, discountPct: l.discountPct })),
     subtotal, gst, discountTotal, total,
     status: document.getElementById('inv-status').value || 'unpaid',
   };
@@ -2272,6 +2397,49 @@ function partyOutstanding(type, id) {
   return purchTotal - paid;
 }
 
+function partyCardsHtml(list, typeKey, customers) {
+  let html = '';
+  if (list.length === 0) {
+    return `<div class="card"><div class="empty">No matching parties found.</div></div>`;
+  }
+  list.forEach(c => {
+    const outstanding = partyOutstanding(typeKey, c.id);
+    const oweCls = outstanding > 0.005 ? 'badge-low' : 'badge-ok';
+    const oweTxt = customers ? (outstanding > 0.005 ? 'owes you ' : 'all settled ') : (outstanding > 0.005 ? 'you owe ' : 'all settled ');
+    html += `<div class="card party-card">
+      <div class="party-head">
+        <div>
+          <div class="strong">${esc(c.name)}</div>
+          <div class="muted" style="font-size:12px">${esc(c.phone || '')}${c.phone && c.gst ? ' · ' : ''}${esc(c.gst || '')}</div>
+          ${c.vehicleReg ? `<div class="muted" style="font-size:12px">🚗 ${esc(c.vehicleReg)} ${esc(c.vehicleModel || '')}</div>` : ''}
+        </div>
+        <div style="text-align:right">
+          <span class="badge ${oweCls}">${oweTxt}${fmtMoney(Math.abs(outstanding))}</span>
+        </div>
+      </div>
+      <div class="row-actions" style="margin-top:10px">
+        <button class="btn btn-sm" data-action="party-edit" data-id="${c.id}">✏️ Edit</button>
+        <button class="btn btn-sm" data-action="pay-for" data-id="${c.id}">💳 ${customers ? 'Receive' : 'Pay'}</button>
+        <button class="btn btn-sm" data-action="party-invoices" data-id="${c.id}">🧾 Bills</button>
+        <button class="btn btn-sm btn-danger" data-action="party-delete" data-id="${c.id}">🗑</button>
+      </div>
+    </div>`;
+  });
+  return html;
+}
+
+/* live party search — updates only the card list (input keeps its focus while typing) */
+function partySearchInput(q) {
+  partyQuery = q;
+  const host = document.getElementById('party-list');
+  if (!host) return;
+  const customers = partyTab === 'customers';
+  const typeKey = customers ? 'customer' : 'supplier';
+  const low = (q || '').toLowerCase();
+  const list = state.parties.filter(p => p.type === typeKey && ((p.name || '').toLowerCase().includes(low) || (p.phone || '').toLowerCase().includes(low) || (p.gst || '').toLowerCase().includes(low) || (p.vehicleReg || '').toLowerCase().includes(low) || (p.vehicleModel || '').toLowerCase().includes(low) || (p.address || '').toLowerCase().includes(low)));
+  host.innerHTML = partyCardsHtml(list, typeKey, customers);
+}
+
 function renderParties() {
   const tab = partyTab;
   let html = `<div class="tabs">
@@ -2283,36 +2451,12 @@ function renderParties() {
     const customers = tab === 'customers';
     const typeKey = customers ? 'customer' : 'supplier';
     const list = state.parties.filter(p => p.type === typeKey);
-    html += `<div class="toolbar"><div class="muted" style="font-size:13px">${customers ? 'People you bill' : 'People you buy from'} · ${list.length}</div>
+    html += `<div class="toolbar"><input class="search-input" id="party-search" placeholder="🔍 Search by name, phone, vehicle…" value="${esc(partyQuery || '')}" oninput="partySearchInput(this.value)"><div class="muted" style="font-size:13px;margin:0 10px">${list.length}</div>
       <div class="toolbar-right"><button class="btn btn-primary" data-action="party-add" data-type="${tab}">✚ Add ${customers ? 'Customer' : 'Supplier'}</button></div></div>`;
     if (list.length === 0) {
       html += `<div class="card"><div class="empty">No ${tab} yet.<br><button class="btn btn-primary" style="margin-top:12px" data-action="party-add" data-type="${tab}">✚ Add your first ${customers ? 'customer' : 'supplier'}</button></div></div>`;
     } else {
-      html += `<div class="cards-list">`;
-      list.forEach(c => {
-        const outstanding = partyOutstanding(typeKey, c.id);
-        const oweCls = outstanding > 0.005 ? 'badge-low' : 'badge-ok';
-        const oweTxt = customers ? (outstanding > 0.005 ? 'owes you ' : 'all settled ') : (outstanding > 0.005 ? 'you owe ' : 'all settled ');
-        html += `<div class="card party-card">
-          <div class="party-head">
-            <div>
-              <div class="strong">${esc(c.name)}</div>
-              <div class="muted" style="font-size:12px">${esc(c.phone || '')}${c.phone && c.gst ? ' · ' : ''}${esc(c.gst || '')}</div>
-              ${c.vehicleReg ? `<div class="muted" style="font-size:12px">🚗 ${esc(c.vehicleReg)} ${esc(c.vehicleModel || '')}</div>` : ''}
-            </div>
-            <div style="text-align:right">
-              <span class="badge ${oweCls}">${oweTxt}${fmtMoney(Math.abs(outstanding))}</span>
-            </div>
-          </div>
-          <div class="row-actions" style="margin-top:10px">
-            <button class="btn btn-sm" data-action="party-edit" data-id="${c.id}">✏️ Edit</button>
-            <button class="btn btn-sm" data-action="pay-for" data-id="${c.id}">💳 ${customers ? 'Receive' : 'Pay'}</button>
-            <button class="btn btn-sm" data-action="party-invoices" data-id="${c.id}">🧾 Bills</button>
-            <button class="btn btn-sm btn-danger" data-action="party-delete" data-id="${c.id}">🗑</button>
-          </div>
-        </div>`;
-      });
-      html += `</div>`;
+      html += `<div class="cards-list" id="party-list">${partyCardsHtml(list, typeKey, customers)}</div>`;
     }
   } else {
     html += `<form id="payment-form" class="card" style="max-width:640px;margin-bottom:16px">
@@ -2803,13 +2947,31 @@ function handleDeduct(e) {
   if (serialNumbers.length > 0) { qty = serialNumbers.length; }
   const reason = document.getElementById('deduct-reason').value;
   if (qty <= 0) { toast('Enter a valid quantity', 'error'); return; }
+  const countSale = !!(document.getElementById('deduct-count-sale') && document.getElementById('deduct-count-sale').checked);
+  const saleAmtIn = num((document.getElementById('deduct-sale-amount') || {}).value);
+  const deductNote = document.getElementById('deduct-note').value.trim();
   const res = deductStockEntry({ productId: product.id, quantity: qty, serialNumbers, reason });
   if (res.ok) {
     document.getElementById('deduct-qty').value = 1;
     document.getElementById('deduct-note').value = '';
-    markJustAdded(res.txId);
-    showSuccess('✅ Stock Removed!', `${qty} units of ${product.name} · ${product.quantity} left in stock`, 'transactions');
+    if (countSale) {
+      if (!state.manualSales) state.manualSales = [];
+      const amount = saleAmtIn > 0 ? saleAmtIn : qty * (product.unitPrice || 0);
+      state.manualSales.unshift({ id: uid(), productId: product.id, productName: product.name, qty, amount, date: new Date().toISOString(), note: deductNote || 'Direct sale (deduct form)' });
+      saveState();
+      render();
+      showSuccess('✅ Stock Removed + Sale Counted!', `${qty} × ${product.name} · ${fmtMoney(amount)} added in Today's Sales`, 'transactions');
+    } else {
+      markJustAdded(res.txId);
+      showSuccess('✅ Stock Removed!', `${qty} units of ${product.name} · ${product.quantity} left in stock`, 'transactions');
+    }
   }
+}
+
+function toggleDeductSale() {
+  const cb = document.getElementById('deduct-count-sale');
+  const wrap = document.getElementById('deduct-sale-amt-wrap');
+  if (cb && wrap) wrap.hidden = !cb.checked;
 }
 
 /* ---------------- cloud sync ---------------- */
