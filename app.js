@@ -681,16 +681,21 @@ function parseCsvRows(txt) {
 /* map a spreadsheet (header row + data rows) into stock items */
 function mapSheetRows(rows) {
   const KW = {
-    name: ['item', 'product', 'name', 'description', 'particular', 'goods', 'spare', 'material', 'article'],
-    qty: ['qty', 'quantity', 'nos', 'count', 'pcs', 'units', 'stock'],
-    price: ['mrp', 'm\\.r\\.p', 'rate', 'price', 'selling', 'sale', 'unit price', 'per unit'],
+    name: ['item', 'product', 'name', 'description', 'particular', 'goods', 'spare', 'material', 'article', 'commodity'],
+    qty: ['qty', "q'ty", 'quantity', 'nos', 'count', 'pcs', 'units', 'stock', 'no of'],
+    price: ['mrp', 'm\\.r\\.p', 'm r p', 'max retail', 'rate', 'price', 'selling', 'sale', 'unit price', 'per unit'],
     cost: ['cost', 'purchase', 'buy', 'cp'],
     category: ['category', 'type', 'group', 'class'],
     sku: ['sku', 'code', 'part', 'p/n', 'partno'],
     brand: ['brand', 'company', 'make', 'manufacturer'],
     barcode: ['barcode', 'bar code', 'ean', 'upc'],
   };
-  const isDateStr = s => /^\d{1,2}[\/.\-]\d{1,2}([\/.\-]\d{2,4})?$/.test(String(s).trim());
+  const isDateStr = s => {
+    const t = String(s).trim();
+    if (!/^\d{1,2}[\/.\-]\d{1,2}([\/.\-]\d{2,4})?$/.test(t)) return false;
+    const pr = t.split(/[\/.\-]/).map(Number);                 // 45.00 is a price, not a date
+    return pr[0] >= 1 && pr[0] <= 31 && pr[1] >= 1 && pr[1] <= 12;
+  };
   const parseNum = v => {
     const s = String(v == null ? '' : v).replace(/(rs\.?|inr)/gi, '').replace(/[₹₨$,]/g, '').trim();
     if (!s || isDateStr(s)) return 0;
@@ -717,11 +722,14 @@ function mapSheetRows(rows) {
   }
   let col;
   if (header) {
-    const colOf = list => header.findIndex(c => list.some(w => c && (c === w || (new RegExp(w, 'i')).test(c))));
+    const colOf = (list, excl) => header.findIndex(c => list.some(w => c && (c === w || (new RegExp(w, 'i')).test(c))) && !(excl && excl.some(x => new RegExp(x, 'i').test(c))));
     col = {
-      name: colOf(KW.name), qty: colOf(KW.qty), price: colOf(KW.price), cost: colOf(KW.cost),
-      category: colOf(KW.category), sku: colOf(KW.sku), brand: colOf(KW.brand), barcode: colOf(KW.barcode),
+      name: colOf(KW.name, ['brand', 'company', 'party name']), qty: colOf(KW.qty, ['discount']), price: colOf(KW.price), cost: colOf(KW.cost),
+      category: colOf(KW.category), sku: colOf(KW.sku, ['particular']), brand: colOf(KW.brand), barcode: colOf(KW.barcode),
     };
+    // MRP column wins for the price — user adds stock with MRP (e.g. Rate vs MRP both present in GST bills)
+    const mi = header.findIndex(c => /mrp|m\.r\.p|m r p|max retail/.test(c));
+    if (mi >= 0 && mi !== col.name && mi !== col.qty) col.price = mi;
     // sanity: same column can't be both name and qty/price (e.g. tiny header)
     if (col.name >= 0 && col.qty === col.name) col.qty = -1;
     if (col.name >= 0 && col.price === col.name) col.price = -1;
@@ -800,15 +808,27 @@ function mapSheetRows(rows) {
    Reads rows of positioned words like a human looks at a bill:
    names on the left, qty in the middle, amount on the right. */
 
-const BILL_SKIP_RE = /\b(gst\s*invoice|tax\s*invoice|invoice|bill\s*no|date|gstin|phone|mobile|tel|address|thank|subtotal|sub\s*total|cgst|sgst|igst|grand\s*total|total|round\s*off|amount\s*in\s*words|declared|assertion|novelty|hereby|subject|cashier|salesman|customer|bill\s*to|ship\s*to|delivery\s*note|order\s*no|p\.?o\.?\s*no|hsn|sac|discount|refund|paid|balance|due|credit|debit|previous\s*balance|carried|page|scanned|copy|original|supervisor|manager|proprietor|verified|checked|goods\s*once|terms|description)\b/i;
+const BILL_SKIP_RE = /\b(gst\s*invoice|tax\s*invoice|invoice|bill\s*no|date|gstin|phone|mobile|tel|address|thank|subtotal|sub\s*total|cgst|sgst|igst|grand\s*total|total|round\s*off|amount\s*in\s*words|declared|assertion|novelty|hereby|subject|cashier|salesman|customer|bill\s*to|ship\s*to|delivery\s*note|order\s*no|p\.?o\.?\s*no|hsn|sac|discount|refund|paid|balance|due|credit|debit|previous\s*balance|carried|page|scanned|copy|original|supervisor|manager|proprietor|verified|checked|goods\s*once|terms|description|taxable|freight|round|rupees?|in\s*words|e\.?&\.?o\.?e|transport|vehicle|eway|payable|tender|cash|upi|neft|imps|cheque|online|email|www|pan\s*no|state\s*code|courier|lorry|challan|dispatch|despatch|weigh|signature|authori[sz]ed|signatory)\b/i;
 const BILL_UNIT_WORDS = /^(nos?|no\.?|pcs|pieces?|units?|boxes?|packs?|quantities|ltrs?|litres?|liters?|ml|kgs?|gms?|grams?|metres?|meters?|dozen|rolls?|pkts?|bundles?|coil)$/i;
 const BILL_CURR_WORDS = /^(rs\.?|inr|₹|\$)$/i;
+const BILL_MRP_TOKEN_RE = /^(m\.?r\.?p\.?)[:.=]?$/i;
+const BILL_MRP_RE = /(?:m\.?r\.?p\.?)\s*[:=]?\s*(?:₹|rs\.?|inr|\$)?\s*([\d,]+(?:\.\d{1,2})?)/i;
+
+/* robust number parser — "₹1,23,450.50" / "Rs.450/-" / "1,234" → number */
+function billParseNum(s) {
+  const str = String(s || '').replace(/[₹$₨]/g, '').replace(/^rs\.?/i, '').replace(/,/g, '').trim();
+  const m = str.match(/(\d+(?:\.\d+)?)/);
+  return m ? parseFloat(m[1]) : 0;
+}
 
 /* is this word a plain number? (dates, GST%, serial "1.", GSTIN numbers excluded) */
 function billNumWord(s) {
   const raw = String(s).trim();
   if (/^\d{1,3}[.)]$/.test(raw)) return false;                  // list serial "1."
-  if (/^\d{1,2}[\/.\-]\d{1,2}([\/.\-]\d{2,4})?$/.test(raw)) return false; // date 25/10/26
+  if (/^\d{1,2}[\/.\-]\d{1,2}([\/.\-]\d{2,4})?$/.test(raw)) {    // date 25/10/26 — but NOT a price like 45.00
+    const pr = raw.split(/[\/.\-]/).map(Number);
+    if (pr[0] >= 1 && pr[0] <= 31 && pr[1] >= 1 && pr[1] <= 12) return false;
+  }
   if (/^\d{1,3}(\.\d{1,2})?%$/.test(raw)) return false;         // GST 18%
   if (!/^\d[\d,]*(\.\d{1,2})?$/.test(raw)) return false;
   const v = parseFloat(raw.replace(/,/g, ''));
@@ -817,10 +837,12 @@ function billNumWord(s) {
   return true;
 }
 
-/* split OCR-glued words: "Rs540" → [Rs|540], "3nos" → [3|nos], "30x" → [30|x], "4.Brass" → [4.|Brass] */
+/* split OCR-glued words: "Rs540" → [Rs|540], "3nos" → [3|nos], "30x" → [30|x], "4.Brass" → [4.|Brass], "MRP:450" → [MRP|450] */
 function billSplitWord(w) {
   const s = String(w.s);
   let m = s.match(/^(\d{1,5})\s*[x×]$/i); if (m) return [{ x: w.x, s: m[1] }, { x: w.x + 1, s: 'x' }];
+  m = s.match(/^qty[^0-9]*(\d{1,5})$/i); if (m) return [{ x: w.x, s: 'Qty' }, { x: w.x + 1, s: m[1] }];
+  m = s.match(/^m(?:\.?r\.?p\.?)?[:=]?(\d[\d,]*(?:\.\d{1,2})?)$/i); if (m) return [{ x: w.x, s: 'MRP' }, { x: w.x + 1, s: m[1] }];
   m = s.match(/^(\d{1,5})(nos?|no\.?|pcs|pieces?|units?|boxes?|packs?|pairs?|ltrs?|litres?|liters?|ml|kgs?|gms?|grams?|dozen)$/i); if (m) return [{ x: w.x, s: m[1] }, { x: w.x + 1, s: m[2] }];
   m = s.match(/^(?:₹|\$|rs\.?|inr)(\d[\d,]*(?:\.\d{1,2})?)$/i); if (m) return [{ x: w.x, s: s.slice(0, s.length - m[1].length) }, { x: w.x + 1, s: m[1] }];
   m = s.match(/^(\d{1,5})\.(?=[A-Za-z])/); if (m) return [{ x: w.x, s: m[1] + '.' }, { x: w.x + 1, s: s.slice(m[1].length + 1) }];
@@ -836,95 +858,193 @@ function billFloatingNum(words, i) {
   if (!next) return true;                                        // last word
   if (BILL_CURR_WORDS.test(next) || BILL_UNIT_WORDS.test(next.replace(/[.:]$/, ''))) return true;
   if (/^[x×@]$/i.test(next)) return true;
+  if (billNumWord(next)) return true;                            // number followed by another number → the pair is qty/price, not the name
   if (BILL_CURR_WORDS.test(prev)) return true;
   if (i === 0) return true;
   return false;
 }
 
+/* detect the column header row (Qty / MRP / Rate / Amount) and its x positions */
+function detectBillColumns(rows) {
+  for (let i = 0; i < Math.min(rows.length, 8); i++) {
+    const raw = rows[i] || [];
+    // a real header row has almost no plain numbers — an item line like "MRP:450 Qty 2" must not be mistaken for one
+    const numCount = raw.filter(w => billNumWord(String(w.s).replace(/[^0-9.,]/g, '')) || /^\d/.test(String(w.s))).length;
+    if (numCount > 1) continue;
+    let qtyX = -1, mrpX = -1, rateX = -1, amtX = -1;
+    raw.forEach(w => {
+      const t = String(w.s).toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (!t || t.length > 16) return;
+      if (qtyX < 0 && /(qty|quantit|^pcs|^nos|^units?$|^stock$)/.test(t)) qtyX = w.x;
+      else if (mrpX < 0 && /mrp/.test(t)) mrpX = w.x;
+      else if (rateX < 0 && /^(rate|price|unitprice|rateper)/.test(t)) rateX = w.x;
+      else if (amtX < 0 && /^(amt|amount|value|total|net)/.test(t)) amtX = w.x;
+    });
+    if (qtyX >= 0 && (mrpX >= 0 || rateX >= 0 || amtX >= 0)) {
+      return { hdrIdx: i, qtyX, mrpX, rateX, amtX };
+    }
+  }
+  return null;
+}
+
+/* read a data row using the detected column x-positions (most reliable path) */
+function parseRowByColumns(words, cols) {
+  const nums = [];
+  words.forEach((w, i) => {
+    if (billNumWord(w.s)) nums.push({ i, v: billParseNum(w.s), x: w.x });
+  });
+  if (!nums.length) return null;
+  // name = words left of the FIRST numeric column (qty may sit right of MRP/Rate!)
+  const nameCut = Math.min.apply(null, [cols.qtyX, cols.mrpX, cols.rateX, cols.amtX].filter(x => x >= 0)) - 25;
+  const nameToks = [];
+  words.forEach(w => {
+    const t = w.s.replace(/^[.\-:–—,()|]+|[.\-:–—,()|]+$/g, '');
+    if (!t) return;
+    if (BILL_MRP_TOKEN_RE.test(t)) return;
+    if (BILL_CURR_WORDS.test(t) || BILL_UNIT_WORDS.test(t) || /^[x×@]$/i.test(t)) return;
+    if (w.x < nameCut) nameToks.push(t);
+  });
+  let name = nameToks.join(' ').replace(/\s{2,}/g, ' ').trim();
+  name = name.replace(/^(?:\d{1,3}[.)]?\s+)+/, '');   // leading serial "1." / "1 " / "12)"
+  if (!/[a-z]/i.test(name) || name.replace(/[^a-z]/gi, '').length < 2) return null;
+  // qty = the number sitting in the Qty column (closest x to the header word)
+  const sorted = nums.slice().sort((a, b) => Math.abs(a.x - cols.qtyX) - Math.abs(b.x - cols.qtyX));
+  const qn = sorted[0];
+  if (!qn || Math.abs(qn.x - cols.qtyX) > 55) return null;
+  const qty = qn.v;
+  if (!(qty > 0) || qty > 100000) return null;
+  // price = MRP column first, then Rate/Price, then Amount
+  const used = new Set([qn.i]);
+  let price = 0;
+  const targets = [[cols.mrpX, false], [cols.rateX, false], [cols.amtX, true]].filter(t => t[0] >= 0);
+  for (const pair of targets) {
+    const X = pair[0], isAmt = pair[1];
+    const cand = nums.filter(n => !used.has(n.i) && n.v < 10000000).sort((a, b) => Math.abs(a.x - X) - Math.abs(b.x - X))[0];
+    if (!cand || Math.abs(cand.x - X) > 55) continue;
+    price = cand.v;
+    if (isAmt && cols.mrpX < 0 && cols.rateX < 0 && qty > 1) {
+      const per = Math.round((cand.v / qty) * 100) / 100;
+      if (per > 0 && per < cand.v) price = per;      // amount column & no rate column → store unit price
+    }
+    used.add(cand.i);
+    break;
+  }
+  return { name: name.slice(0, 60), qty, price: price || 0 };
+}
+
+/* heuristic line reader — "4 x 190", "5 nos @ 220", "qty:3 ... 1,234.50" patterns */
+function parseRowHeuristic(words) {
+  const numIdx = [];
+  words.forEach((w, i) => { if (billNumWord(w.s) && billFloatingNum(words, i)) numIdx.push(i); });
+  if (!numIdx.length) return null;
+
+  // 0) labeled numbers: "MRP 450" / "Rate 380" — capture BEFORE name building so neither the label nor its number leaks into the name
+  let mrpVal = 0, rateVal = 0;
+  const labeledIdx = new Set();
+  for (let i = 0; i < words.length - 1; i++) {
+    const tok = String(words[i].s);
+    if (billNumWord(((words[i + 1]) || {}).s || '')) {
+      if (BILL_MRP_TOKEN_RE.test(tok)) { mrpVal = billParseNum(words[i + 1].s); labeledIdx.add(i); labeledIdx.add(i + 1); const ix = numIdx.indexOf(i + 1); if (ix >= 0) numIdx.splice(ix, 1); }
+      else if (/^(rate|price)$/i.test(tok.replace(/[:.=]/g, ''))) { rateVal = billParseNum(words[i + 1].s); labeledIdx.add(i); labeledIdx.add(i + 1); const ix = numIdx.indexOf(i + 1); if (ix >= 0) numIdx.splice(ix, 1); }
+    }
+  }
+
+  // name = the words that stay behind (not numbers/qty/currency/labels)
+  const nameToks = [];
+  words.forEach((w, i) => {
+    const t = w.s.replace(/^[.\-:–—,()|]+|[.\-:–—,()|]+$/g, '');
+    if (!t || numIdx.indexOf(i) >= 0 || labeledIdx.has(i)) return;
+    if (BILL_MRP_TOKEN_RE.test(t) || /^(qty|quantity)$/i.test(t)) return;
+    if (BILL_CURR_WORDS.test(t) || BILL_UNIT_WORDS.test(t) || /^[x×@]$/i.test(t)) return;
+    if (/^(qty|quantity)[:=].*\d/i.test(t)) return;            // "qty:5" glued
+    if (/^\d[\d,]*(?:\.\d+)?$/.test(t) && billFloatingNum(words, i)) return;   // floating number — not part of name
+    if (/^\d[x×]$/i.test(t)) return;                           // "30x" glued stray
+    nameToks.push(t);
+  });
+  let name = nameToks.join(' ').replace(/\s{2,}/g, ' ').trim();
+  name = name.replace(/^(?:\d{1,3}[.)]?\s+)+/, '');             // leading serial "1."
+  if (!/[a-z]/i.test(name) || name.replace(/[^a-z]/gi, '').length < 2) return null;
+
+  const val = i => billParseNum(words[i].s);
+  let qty = 0, amount = 0, qtySrc = '', pairPrice = 0;
+  // 1) "Qty 5" / "Qty: 5" keyword right before a number, incl. glued "qty:5"
+  for (const i of numIdx.slice()) {
+    const prev = ((words[i - 1] || {}).s || '').trim();
+    if (/^qty/i.test(prev)) { const pm = prev.match(/qty[^0-9]*(\d+)/i); if (pm) { qty = parseFloat(pm[1]); numIdx.splice(numIdx.indexOf(i), 1); } else if (/^(qty\.?|quantity)[:=]?$/i.test(prev)) { qty = val(i); numIdx.splice(numIdx.indexOf(i), 1); } if (qty) { qtySrc = 'kw'; break; } }
+  }
+  // 2) "4 x 190" pair — standalone x between numbers, or merged "30x 18"
+  if (!qty) {
+    for (let k = 1; k < words.length - 1; k++) {
+      if (/^[x×]$/i.test(words[k].s)) {
+        const li = k - 1, ri = k + 1;
+        if (billNumWord(words[li].s) && billNumWord(words[ri].s)) {
+          const q = val(li), p = val(ri);
+          if (q > 0 && q < 10000 && p > 0) { qty = q; pairPrice = p; qtySrc = 'pair'; numIdx.splice(numIdx.indexOf(li), 1); numIdx.splice(numIdx.indexOf(ri), 1); }
+        }
+        break;
+      }
+      const m = String(words[k].s).match(/^(\d{1,5})[x×]$/i);
+      if (m) {
+        let pi = -1, pv = 0;
+        for (let j = k + 1; j <= Math.min(k + 2, words.length - 1); j++) {
+          if (BILL_CURR_WORDS.test(words[j].s)) continue;
+          if (billNumWord(words[j].s)) { pi = j; pv = val(j); break; }
+        }
+        const q = parseFloat(m[1]);
+        if (pi >= 0 && q > 0 && pv > 0) {
+          qty = q; pairPrice = pv; qtySrc = 'pair';
+          const kix = numIdx.indexOf(k); if (kix >= 0) numIdx.splice(kix, 1);
+          const pix = numIdx.indexOf(pi); if (pix >= 0) numIdx.splice(pix, 1);
+        }
+        break;
+      }
+    }
+  }
+  // 3) "10 nos / 5 pcs / 3 Ltr" — number right before a unit word
+  if (!qty) {
+    for (const i of numIdx.slice()) {
+      const next = ((words[i + 1] || {}).s || '').replace(/[.:]$/, '');
+      if (BILL_UNIT_WORDS.test(next)) { qty = val(i); numIdx.splice(numIdx.indexOf(i), 1); qtySrc = 'unit'; break; }
+    }
+  }
+  // amount = right-most remaining number
+  if (numIdx.length) amount = val(numIdx[numIdx.length - 1]);
+  // still no qty? the left-most plausible integer is the qty
+  if (!qty) {
+    const qCand = numIdx.map(val).filter(v => v === Math.round(v) && v >= 1 && v <= 2000);
+    if (qCand.length) { qty = qCand[0]; qtySrc = 'bare'; }
+  }
+  if (!qty && !amount) return null;
+  if (!qty) { qty = 1; qtySrc = qtySrc || 'bare'; }
+  // price: explicit MRP label > Rate label > pair price > unit-word amount > computed
+  let price = 0;
+  if (mrpVal) price = mrpVal;
+  else if (rateVal) price = rateVal;
+  else if (qtySrc === 'pair') price = pairPrice;
+  else if (qtySrc === 'unit') price = amount;
+  else if (amount) {
+    const per = Math.round((amount / qty) * 100) / 100;
+    if (qtySrc === 'kw') price = (qty > 1 && (amount % qty === 0 || String(per).length <= 6) && per < amount) ? per : amount;
+    else price = (qty > 1 && per >= 100 && per < amount) ? per : amount;   // bare "name 3 1,234.50" → 1,234.50 is likely the line total
+  }
+  if (price >= 10000000) price = 0;
+  return { name: name.slice(0, 60), qty: qty > 100000 ? 1 : qty, price: price || 0 };
+}
+
 function parseBillRows(rows) {
   const items = [];
-  for (const rawRow of rows) {
+  const allRows = (rows || []).map(r => (r || []).filter(w => w && w.s).map(w => ({ x: w.x, s: String(w.s) })));
+  const cols = detectBillColumns(allRows);
+  const startIdx = cols ? cols.hdrIdx + 1 : 0;
+  for (let ri = startIdx; ri < allRows.length; ri++) {
     let words = [];
-    (rawRow || []).filter(w => w && w.s).forEach(w => { words = words.concat(billSplitWord(w)); });
+    allRows[ri].forEach(w => { words = words.concat(billSplitWord(w)); });
     if (words.length < 2) continue;
     const lineText = words.map(w => w.s).join(' ');
     if (BILL_SKIP_RE.test(lineText)) continue;
-    const numIdx = [];
-    words.forEach((w, i) => { if (billNumWord(w.s) && billFloatingNum(words, i)) numIdx.push(i); });
-    if (!numIdx.length) continue;
-
-    // name = the words that stay behind (not numbers/qty/currency)
-    const nameToks = [];
-    words.forEach((w, i) => {
-      const t = w.s.replace(/^[.\-:–—,()|]+|[.\-:–—,()|]+$/g, '');
-      if (!t || numIdx.indexOf(i) >= 0) return;
-      if (BILL_CURR_WORDS.test(t) || BILL_UNIT_WORDS.test(t) || /^[x×@]$/i.test(t)) return;
-      if (/^(qty|quantity)[:=].*\d/i.test(t)) return;            // "qty:5" glued
-      if (/^\d[\d,]*(?:\.\d+)?$/.test(t) && billFloatingNum(words, i)) return;   // floating number — not part of name
-      if (/^\d[x×]$/i.test(t)) return;                           // "30x" glued stray
-      nameToks.push(t);
-    });
-    let name = nameToks.join(' ').replace(/\s{2,}/g, ' ').trim();
-    if (!/[a-z]/i.test(name) || name.replace(/[^a-z]/gi, '').length < 2) continue;
-
-    const val = i => parseFloat(String(words[i].s).replace(/[^0-9.]/g, ''));
-    let qty = 0, amount = 0;
-    // 1) "Qty 5" / "Qty: 5" keyword right before a number, incl. glued "qty:5"
-    for (const i of numIdx.slice()) {
-      const prev = ((words[i - 1] || {}).s || '').trim();
-      if (/^qty/i.test(prev)) { const pm = prev.match(/qty[^0-9]*(\d+)/i); if (pm) { qty = parseFloat(pm[1]); numIdx.splice(numIdx.indexOf(i), 1); } else if (/^(qty\.?|quantity)[:=]?$/i.test(prev)) { qty = val(i); numIdx.splice(numIdx.indexOf(i), 1); } if (qty) break; }
-    }
-    // 2) "4 x 190" pair — standalone x between numbers, or merged "30x 18"
-    if (!qty) {
-      for (let k = 1; k < words.length - 1; k++) {
-        if (/^[x×]$/i.test(words[k].s)) {
-          const li = k - 1, ri = k + 1;
-          if (billNumWord(words[li].s) && billNumWord(words[ri].s)) {
-            const q = val(li), p = val(ri);
-            if (q > 0 && q < 10000 && p > 0) { qty = q; amount = q * p; numIdx.splice(numIdx.indexOf(li), 1); numIdx.splice(numIdx.indexOf(ri), 1); }
-          }
-          break;
-        }
-        const m = String(words[k].s).match(/^(\d{1,5})[x×]$/i);
-        if (m) {
-          let pi = -1, pv = 0;
-          for (let j = k + 1; j <= Math.min(k + 2, words.length - 1); j++) {
-            if (BILL_CURR_WORDS.test(words[j].s)) continue;
-            if (billNumWord(words[j].s)) { pi = j; pv = val(j); break; }
-          }
-          const q = parseFloat(m[1]);
-          if (pi >= 0 && q > 0 && pv > 0) {
-            qty = q; amount = q * pv;
-            const kix = numIdx.indexOf(k); if (kix >= 0) numIdx.splice(kix, 1);
-            const pix = numIdx.indexOf(pi); if (pix >= 0) numIdx.splice(pix, 1);
-          }
-          break;
-        }
-      }
-    }
-    // 3) "10 nos / 5 pcs / 3 Ltr" — number right before a unit word
-    if (!qty) {
-      for (const i of numIdx.slice()) {
-        const next = ((words[i + 1] || {}).s || '').replace(/[.:]$/, '');
-        if (BILL_UNIT_WORDS.test(next)) { qty = val(i); numIdx.splice(numIdx.indexOf(i), 1); break; }
-      }
-    }
-    // amount = right-most remaining number
-    if (numIdx.length) amount = val(numIdx[numIdx.length - 1]);
-    // still no qty? the left-most plausible integer is the qty
-    if (!qty) {
-      const qCand = numIdx.map(val).filter(v => v === Math.round(v) && v >= 1 && v <= 2000);
-      if (qCand.length) qty = qCand[0];
-    }
-    if (!qty && !amount) continue;
-    if (!qty) qty = 1;
-    if (amount && qty > 1) {
-      const q = Math.round((amount / qty) * 100) / 100;
-      if (q > 0 && q < amount) amount = q;                  // store unit price, not line total
-    } else if (!amount) amount = 0;
-    if (amount >= 10000000) amount = 0;
-    items.push({ name: name.slice(0, 60), qty: qty > 100000 ? 1 : qty, price: amount || 0 });
-    if (items.length >= 40) break;
+    let it = cols ? parseRowByColumns(words, cols) : null;
+    if (!it) it = parseRowHeuristic(words);
+    if (it) { items.push(it); if (items.length >= 40) break; }
   }
   return items;
 }
@@ -969,6 +1089,7 @@ function parseBillItems(text) {
     toks.forEach((tok, ti) => {
       const t = tok.replace(/^[.\-:–—,()]+|[.\-:–—,()]+$/g, '');
       if (!t) return;
+      if (BILL_MRP_TOKEN_RE.test(t)) return;                    // "MRP" label word
       if (/^(qty\.?|quantity|nos|pcs|units?|boxes?|packs?|pairs?|x|×|@|rs\.?|inr|₹|\$)$/i.test(t)) return;
       if (/^\d{1,3}[.)]$/.test(t)) return;                      // leftover serial "4." anywhere
       if (/^\d+(?:[.,]\d+)*$/.test(t)) return;                  // pure number → not part of name
@@ -985,7 +1106,14 @@ function parseBillItems(text) {
       if (last == null) return 0;
       return (q > 1 && last % q === 0 && last / q < last) ? last / q : last;
     };
+    const mrpM = line.match(BILL_MRP_RE);
     if (pairM) { qty = parseInt(pairM[1]); price = parseFloat(pairM[2].replace(/,/g, '')); }
+    else if (mrpM) {
+      price = parseFloat(mrpM[1].replace(/,/g, ''));
+      if (qtyM) qty = parseInt(qtyM[1]);
+      else qty = numsMatch.find(n => n === Math.round(n) && n >= 1 && n <= 2000 && n !== price) || 0;
+      if (!qty) continue;
+    }
     else if (qtyM) { qty = parseInt(qtyM[1]); price = pickPrice(qty); }
     else { qty = numsMatch.find(n => n <= 9999) || 0; if (!qty) continue; price = pickPrice(qty); }
     if (qty <= 0) qty = 1;
@@ -1012,13 +1140,30 @@ function matchExistingProducts(items) {
   });
 }
 
+/* merge duplicate rows (same product found twice on the bill) into one with summed qty */
+function dedupeBillItems(items) {
+  const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const keyOf = it => it.productMatch ? 'p:' + it.productMatch : 'n:' + norm(it.name);
+  const out = [];
+  items.forEach(it => {
+    const key = keyOf(it);
+    const prev = out.find(x => keyOf(x) === key);
+    if (prev) {
+      prev.qty = (num(prev.qty) || 1) + (num(it.qty) || 1);
+      if (!prev.price && it.price) prev.price = it.price;
+      if (!prev.costPrice && it.costPrice) prev.costPrice = it.costPrice;
+    } else out.push(Object.assign({}, it));
+  });
+  return out;
+}
+
 function finishBillAnalysis(items, kind) {
   items = items.filter(it => it && it.name);
   billMeta.kind = kind;
   const gstinM = (billMeta.rawText || '').match(/\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{3})\b/);
   billMeta.hasGst = !!gstinM || /\b(cgst|sgst|igst|taxable|hsn)\b/i.test(billMeta.rawText || '');
   billMeta.gstin = gstinM ? gstinM[1] : '';
-  const matched = matchExistingProducts(items);
+  const matched = dedupeBillItems(matchExistingProducts(items));
   setBillProgress(100, 'Done');
   if (items.length === 0) {
     setBillStatus(`⚠️ I read the ${kind} but couldn't confidently find any product lines.<br><span style="font-size:12px">Add them manually with ＋ Add Row — or try a sharper photo / an Excel sheet of your stock.</span>`);
@@ -1058,7 +1203,7 @@ function renderBillItems() {
       <div class="il-cell bill-namecell"><label>Item</label><input class="bill-name" type="text" value="${esc(it.name)}" placeholder="Item name"></div>
       <div class="il-cell"><label>Exists as</label></div>
       <div class="il-cell"><label>Qty</label><input class="bill-qty" type="number" min="1" step="1" value="${it.qty || 1}" inputmode="numeric"></div>
-      <div class="il-cell"><label>Price ₹</label><input class="bill-price" type="number" min="0" step="0.01" value="${it.price || 0}" inputmode="decimal"></div>
+      <div class="il-cell"><label>MRP ₹</label><input class="bill-price" type="number" min="0" step="0.01" value="${it.price || 0}" inputmode="decimal"></div>
       <div class="il-cell bill-delcell"><label>&nbsp;</label><button type="button" class="btn btn-sm btn-danger" data-action="bill-row-remove" title="Remove">✕</button></div>`;
     row.children[1].appendChild(sel);
     host.appendChild(row);
@@ -1116,8 +1261,12 @@ function syncBillItems() {
 function handleBillConfirm(e) {
   e && e.preventDefault && e.preventDefault();
   syncBillItems();
+  billItems.forEach(it => {
+    it.qty = Math.min(Math.max(num(it.qty) || 0, 0), 100000);
+    if (!(it.price > 0) || it.price >= 10000000) it.price = 0;
+  });
   const valid = billItems.filter(it => it.name && it.name.trim() && it.qty > 0);
-  if (valid.length === 0) { toast('Add at least one item with a name', 'error'); return; }
+  if (valid.length === 0) { toast('Add at least one item with a name and quantity', 'error'); return; }
   let txIds = [];
   valid.forEach(it => {
     const res = addStockEntry({
