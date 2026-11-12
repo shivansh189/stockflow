@@ -701,7 +701,9 @@ function textContentToRows(tc) {
     const toks = str.split(/\s+/).filter(Boolean);
     if (!toks.length) return;
     if (toks.length === 1) { words.push({ x: x0 + w / 2, y, s: toks[0] }); return; }
-    // distribute tokens across the item box by their character offset (item.width is the full text width)
+    // distribute tokens across the item box by their character offset (item.width is the full text width).
+    // these x positions are only ESTIMATES (marked est) — rows where most words are estimated are read
+    // by the pattern reader instead of the column reader
     const total = Math.max(str.length, 1);
     let cursor = 0;
     toks.forEach(t => {
@@ -709,7 +711,7 @@ function textContentToRows(tc) {
       if (at < 0) at = cursor;
       cursor = at + t.length;
       const frac = (at + t.length / 2) / total;
-      words.push({ x: x0 + w * frac, y, s: t });
+      words.push({ x: x0 + w * frac, y, s: t, est: 1 });
     });
   };
   (tc.items || []).forEach(it => {
@@ -940,13 +942,14 @@ function billNumWord(s) {
 /* split OCR-glued words: "Rs540" → [Rs|540], "3nos" → [3|nos], "30x" → [30|x], "4.Brass" → [4.|Brass], "MRP:450" → [MRP|450] */
 function billSplitWord(w) {
   const s = String(w.s);
-  let m = s.match(/^(\d{1,5})\s*[x×]$/i); if (m) return [{ x: w.x, s: m[1] }, { x: w.x + 1, s: 'x' }];
-  m = s.match(/^qty[^0-9]*(\d{1,5})$/i); if (m) return [{ x: w.x, s: 'Qty' }, { x: w.x + 1, s: m[1] }];
-  m = s.match(/^m(?:\.?r\.?p\.?)?[:=]?(\d[\d,]*(?:\.\d{1,2})?)$/i); if (m) return [{ x: w.x, s: 'MRP' }, { x: w.x + 1, s: m[1] }];
-  m = s.match(/^(\d{1,5})(nos?|no\.?|pcs|pieces?|units?|boxes?|packs?|pairs?|ltrs?|litres?|liters?|ml|kgs?|gms?|grams?|dozen)$/i); if (m) return [{ x: w.x, s: m[1] }, { x: w.x + 1, s: m[2] }];
-  m = s.match(/^(?:₹|\$|rs\.?|inr)(\d[\d,]*(?:\.\d{1,2})?)$/i); if (m) return [{ x: w.x, s: s.slice(0, s.length - m[1].length) }, { x: w.x + 1, s: m[1] }];
-  m = s.match(/^(\d{1,5})\.(?=[A-Za-z])/); if (m) return [{ x: w.x, s: m[1] + '.' }, { x: w.x + 1, s: s.slice(m[1].length + 1) }];
-  return [{ x: w.x, s }];
+  const mk = (x, t) => ({ x, s: t, est: w.est ? 1 : 0 });
+  let m = s.match(/^(\d{1,5})\s*[x×]$/i); if (m) return [mk(w.x, m[1]), mk(w.x + 1, 'x')];
+  m = s.match(/^qty[^0-9]*(\d{1,5})$/i); if (m) return [mk(w.x, 'Qty'), mk(w.x + 1, m[1])];
+  m = s.match(/^m(?:\.?r\.?p\.?)?[:=]?(\d[\d,]*(?:\.\d{1,2})?)$/i); if (m) return [mk(w.x, 'MRP'), mk(w.x + 1, m[1])];
+  m = s.match(/^(\d{1,5})(nos?|no\.?|pcs|pieces?|units?|boxes?|packs?|pairs?|ltrs?|litres?|liters?|ml|kgs?|gms?|grams?|dozen)$/i); if (m) return [mk(w.x, m[1]), mk(w.x + 1, m[2])];
+  m = s.match(/^(?:₹|\$|rs\.?|inr)(\d[\d,]*(?:\.\d{1,2})?)$/i); if (m) return [mk(w.x, s.slice(0, s.length - m[1].length)), mk(w.x + 1, m[1])];
+  m = s.match(/^(\d{1,5})\.(?=[A-Za-z])/); if (m) return [mk(w.x, m[1] + '.'), mk(w.x + 1, s.slice(m[1].length + 1))];
+  return [{ x: w.x, s, est: w.est ? 1 : 0 }];
 }
 
 /* a "floating" number is NOT part of the item name: it sits at a line edge
@@ -1229,7 +1232,7 @@ function billRowScore(it) {
 
 function parseBillRows(rows) {
   const items = [];
-  const allRows = (rows || []).map(r => (r || []).filter(w => w && w.s).map(w => ({ x: w.x, s: String(w.s) })));
+  const allRows = (rows || []).map(r => (r || []).filter(w => w && w.s).map(w => ({ x: w.x, s: String(w.s), est: w.est ? 1 : 0 })));
   const cols = detectBillColumns(allRows);
   const startIdx = cols ? cols.hdrIdx + 1 : 0;
   for (let ri = startIdx; ri < allRows.length; ri++) {
@@ -1250,10 +1253,15 @@ function parseBillRows(rows) {
       const hn = norm(itH.name), cn = norm(itC.name);
       if (hn.length > cn.length && hn.slice(-cn.length) === cn) itC.name = itH.name;
     }
-    // pick the reading that adds up (qty x price = amount); columns win ties
+    // pick the reading that adds up (qty x price = amount); columns win ties — unless the
+    // word positions were only estimated (whole line came as one PDF text item), where the
+    // pattern reader is much more reliable than guessed columns
+    const estCount = words.filter(w => w.est).length;
+    const mostlyEst = estCount >= Math.max(2, Math.ceil(words.length * 0.6));
     let it = itC;
     const sC = billRowScore(itC), sH = billRowScore(itH);
-    if (sH > sC) it = itH;
+    if (mostlyEst) { if (itH && itH.qty > 0) it = itH; }
+    else if (sH > sC) it = itH;
     else if (!itC) it = itH;
     if (!it) {
       // wrapped product name on its own line ("PVC Pipe 40mm" under the first line) → join to the row above
