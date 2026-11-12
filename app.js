@@ -497,6 +497,14 @@ async function runBillAnalysis(file) {
   billMeta = { hasGst: false, gstin: '', rawText: '', kind: '' };
   document.getElementById('modal-bill').removeAttribute('hidden');
   setBillProgress(2, 'Starting…');
+  const runId = (bill.runId = (bill.runId || 0) + 1);
+  // safety net: if a very slow scan / throttled tab hangs the pipeline, never leave the modal stuck
+  const watchdog = setTimeout(function () {
+    if (!bill.busy || bill.runId !== runId) return;
+    bill.busy = false;
+    setBillProgress(0);
+    setBillStatus('⚠️ This bill is taking too long to read.<br><span style="font-size:12px">Keep this app open in the foreground and try again, or upload a photo of the bill. You can also add items with ＋ Add Row.</span>');
+  }, 180000);
   const ext = (file.name.split('.').pop() || '').toLowerCase();
   try {
     let text = '';
@@ -544,7 +552,9 @@ async function runBillAnalysis(file) {
           if (o.text) billMeta.rawText = o.text;
           items = (o.rows && o.rows.length) ? parseBillRows(o.rows) : [];
           if (!items.length && o.text) items = parseBillItems(o.text);
-        } catch (e2) { /* keep going - user can still add rows manually */ }
+        } catch (e2) {
+          if (e2 && /could not be drawn/i.test(String(e2.message))) throw e2;   // render failure → tell the user
+        }
       }
       finishBillAnalysis(items, billMeta.kind === 'image' ? 'image' : 'pdf');
     }
@@ -556,6 +566,7 @@ async function runBillAnalysis(file) {
     setBillStatus('❌ Could not analyze: ' + msg + '<br><span style="font-size:12px">You can still add items manually with the ＋ Add Row button below.</span>');
     openBillModal([]);
   }
+  clearTimeout(watchdog);
   bill.busy = false;
 }
 
@@ -620,11 +631,37 @@ function makeOcrWorker(onProgress) {
     });
 }
 
+/* never let one slow step freeze the analysis forever (background-tab throttling, huge scans, offline CDN):
+   resolves to null after ms milliseconds instead of hanging */
+function withTimeout(p, ms) {
+  return new Promise(function (resolve, reject) {
+    let done = false;
+    const t = setTimeout(function () { if (!done) { done = true; resolve(null); } }, ms);
+    p.then(function (v) { if (!done) { done = true; clearTimeout(t); resolve(v); } })
+      .catch(function (e) { if (!done) { done = true; clearTimeout(t); reject(e); } });
+  });
+}
+
+/* pdf.js paints pages through requestAnimationFrame, and the browser throttles that when the tab is
+   not focused — the drawing then never finishes. Swap rAF for a 0ms timer while we paint the page. */
+async function renderPdfPage(page, viewport, canvas, timeoutMs) {
+  const ctx = canvas.getContext('2d');
+  const raf = window.requestAnimationFrame;
+  window.requestAnimationFrame = function (cb) { return setTimeout(function () { cb(Date.now()); }, 0); };
+  try {
+    return await withTimeout(page.render({ canvasContext: ctx, viewport }).promise, timeoutMs || 45000);
+  } finally {
+    window.requestAnimationFrame = raf;
+  }
+}
+
 async function ocrToRows(src, onProgress, sharedWorker) {
   const own = !sharedWorker;
   const worker = sharedWorker || await makeOcrWorker(onProgress);
   const pre = await prepImage(src);
-  const { data } = await worker.recognize(pre);
+  const rec = await withTimeout(worker.recognize(pre), 60000);
+  if (!rec) { const empty = { text: '', rows: [] }; return empty; }
+  const { data } = rec;
   if (own) await worker.terminate();
   const words = [];
   (data.blocks || []).forEach(b => (b.paragraphs || []).forEach(pa => (pa.lines || []).forEach(l => (l.words || []).forEach(w => {
@@ -667,6 +704,7 @@ async function pdfBillText(file, onProgress, forceOcr) {
   if (!forceOcr && onProgress) onProgress(48, needsOcr.length ? 'Scanned page found — reading it like a photo…' : 'Building rows…');
   const ocrPages = needsOcr.slice(0, 4);
   let shared = null;
+  let renderStalled = false;
   try {
     if (ocrPages.length) shared = await makeOcrWorker(onProgress);
     let done = 0;
@@ -679,7 +717,8 @@ async function pdfBillText(file, onProgress, forceOcr) {
         const viewport = page.getViewport({ scale });
         const canvas = document.createElement('canvas');
         canvas.width = Math.round(viewport.width); canvas.height = Math.round(viewport.height);
-        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+        const painted = await renderPdfPage(page, viewport, canvas, 45000);
+        if (!painted) { renderStalled = true; continue; }   // draw stalled — skip this page instead of freezing
         const o = await ocrToRows(canvas, onProgress, shared);
         text += '\n' + o.text;
         rows = rows.concat(o.rows);
@@ -687,6 +726,9 @@ async function pdfBillText(file, onProgress, forceOcr) {
     }
   } finally {
     if (shared) { try { await shared.terminate(); } catch (e) { /* ignore */ } }
+  }
+  if (renderStalled && !rows.length && !text.trim()) {
+    throw new Error('The PDF pages could not be drawn by the browser. Keep this app open in the foreground and try again.');
   }
   return { text, rows };
 }
@@ -1892,7 +1934,7 @@ async function pdfPageToImage(file, scale) {
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(viewport.width);
   canvas.height = Math.round(viewport.height);
-  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+  await renderPdfPage(page, viewport, canvas, 45000);
   return canvas.toDataURL('image/jpeg', 0.85);
 }
 
