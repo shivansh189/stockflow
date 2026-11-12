@@ -1272,6 +1272,146 @@ function billRowScore(it) {
   return viaRoles ? 3 : 2;
 }
 
+/* ---------- header-less stock / price list reader ----------
+   Shops often upload a plain stock list with NO header row, e.g.
+   Part No | HSN 85443000 | Description | 1700.00 | 863.00 | 2.00
+   detectBillColumns() finds nothing there, so the columns are discovered from the
+   number positions instead: the small whole-number column is the quantity, the
+   leftmost price column is the MRP, and the text left of it is the product name. */
+function parsePriceListRows(allRows) {
+  const rows = (allRows || [])
+    .map(r => (r || []).filter(w => w && w.s).slice().sort((a, b) => a.x - b.x))
+    .filter(r => r.length >= 2);
+  if (rows.length < 2) return [];
+
+  // every plain number that could be a table value ("(2004)", 8-digit HSN, "SAP-02" are not)
+  const nums = [];
+  rows.forEach((r, ri) => r.forEach(w => {
+    const s = String(w.s).trim();
+    if (/[()]/.test(s)) return;                     // "(2004)" — a year, not a price
+    if (!billNumWord(s)) return;
+    const v = billParseNum(s);
+    if (!isFinite(v) || v <= 0) return;
+    nums.push({ ri, x: w.x, v, s, dec: /[.,]/.test(s) });
+  }));
+  if (nums.length < 4) return [];
+
+  // group numbers into vertical columns by their x position
+  const sorted = nums.slice().sort((a, b) => a.x - b.x);
+  const clusterList = [];
+  const tol = 45;
+  sorted.forEach(n => {
+    const c = clusterList.length ? clusterList[clusterList.length - 1] : null;
+    if (c && Math.abs(n.x - c.cx) <= tol) {
+      c.items.push(n);
+      c.cx = c.items.reduce((s, i) => s + i.x, 0) / c.items.length;
+    } else clusterList.push({ cx: n.x, items: [n] });
+  });
+
+  const rowCount = rows.length;
+  // the name/description block ends where the last word of text sits — numbers to its
+  // left are part of the product name ("Activa 100"), not table columns
+  const alphaEnds = rows.map(r => {
+    let e = 0;
+    r.forEach(w => { if (/[A-Za-z]/.test(String(w.s))) e = Math.max(e, w.x); });
+    return e;
+  }).filter(x => x > 0).sort((a, b) => a - b);
+  const alphaEnd = alphaEnds.length ? alphaEnds[Math.floor(alphaEnds.length / 2)] : 0;
+
+  const need = Math.max(2, Math.ceil(rowCount * 0.5));
+  const cols = [];
+  clusterList.forEach(c => {
+    if (c.cx <= alphaEnd - 5) return;                     // inside the description text
+    const rowSet = new Set(c.items.map(i => i.ri));
+    if (rowSet.size < need) return;                       // must repeat on most lines
+    const vals = c.items.map(i => i.v);
+    const asc = vals.slice().sort((a, b) => a - b);
+    const med = asc[Math.floor((asc.length - 1) / 2)];
+    const intRatio = vals.filter(v => Math.abs(v - Math.round(v)) < 0.011).length / vals.length;
+    const decRatio = c.items.filter(i => i.dec).length / c.items.length;
+    const bigIntRatio = c.items.filter(i => /^\d{6,}$/.test(i.s)).length / c.items.length;
+    if (bigIntRatio >= 0.6) return;                       // HSN / SKU column
+    if (med >= 1900 && med <= 2099 && intRatio === 1 && decRatio < 0.3) return;  // year column
+    cols.push({ x: c.cx, items: c.items, med, intRatio });
+  });
+  if (cols.length < 2) return [];
+  cols.sort((a, b) => a.x - b.x);
+
+  // a 1,2,3,… column at the far left is a serial number, not a quantity
+  const seqCol = c => {
+    const first = new Map();
+    c.items.forEach(i => { if (!first.has(i.ri)) first.set(i.ri, i.v); });
+    const vs = [...first.entries()].sort((a, b) => a[0] - b[0]).map(e => e[1]);
+    if (vs.length < 2) return false;
+    for (let i = 1; i < vs.length; i++) {
+      const d = vs[i] - vs[i - 1];
+      if (!(d >= 1 && d <= 3)) return false;
+    }
+    return true;
+  };
+  if (cols.length > 2 && cols[0].intRatio >= 0.7 && cols[0].med <= 200 && seqCol(cols[0])) cols.shift();
+
+  // quantity = the small whole-number column (smallest median); MRP = the leftmost price column
+  const qtyCands = cols.filter(c => c.intRatio >= 0.7 && c.med >= 1 && c.med <= 200).sort((a, b) => a.med - b.med || b.x - a.x);
+  const qtyCol = qtyCands[0] || null;
+  if (!qtyCol) return [];
+  const moneyCols = cols
+    .filter(c => c !== qtyCol && c.med >= Math.max(qtyCol.med * 1.5, qtyCol.med + 1) && c.med >= 5)
+    .sort((a, b) => a.x - b.x);
+  if (!moneyCols.length) return [];
+  const mrpCol = moneyCols[0];
+  const colXs = cols.map(c => c.x);
+
+  const valNear = (r, col) => {
+    let best = null, bd = 1e9;
+    r.forEach(w => {
+      const s = String(w.s).trim();
+      if (/[()]/.test(s) || !billNumWord(s)) return;
+      const d = Math.abs(w.x - col.x);
+      if (d < bd) { bd = d; best = s; }
+    });
+    if (!best || bd > 60) return 0;
+    return billParseNum(best);
+  };
+
+  const items = [];
+  const seen = new Set();
+  rows.forEach(r => {
+    const qty = Math.round(valNear(r, qtyCol));
+    const mrp = valNear(r, mrpCol);
+    if (!qty || qty < 1 || qty > 9999 || !mrp || mrp <= 0) return;
+    const left = r.filter(w => w.x < mrpCol.x - 8 && !(billNumWord(String(w.s).trim()) && colXs.some(x => Math.abs(w.x - x) < 55)));
+    const toks = [];
+    left.forEach(w => {
+      const s = String(w.s).trim().replace(/^[|,;:]+|[|,;:]+$/g, '');
+      if (s) toks.push(s);
+    });
+    const firstLetter = toks.findIndex(s => /[A-Za-z]/.test(s));
+    if (firstLetter < 0) return;
+    const keep = [];
+    toks.forEach((s, i) => {
+      const letters = (s.match(/[A-Za-z]/g) || []).length;
+      const digits = (s.match(/\d/g) || []).length;
+      if (/^\d{6,}$/.test(s)) return;                                   // HSN / EAN / phone
+      if (!letters) { if (i < firstLetter) return; keep.push(s); return; }   // serial / qty digits at line start
+      // part codes: SAP-0208HB, WG-1234A (no lowercase, plenty of digits)
+      if (digits >= 2 && !/[a-z]/.test(s) && s.length >= 5 && i <= firstLetter + 1) return;
+      keep.push(s);
+    });
+    const name = keep.join(' ').replace(/\s{2,}/g, ' ').replace(/^[\s\-–—|]+|[\s\-–—|]+$/g, '').trim();
+    if (!name || name.replace(/[^A-Za-z]/g, '').length < 3) return;
+    if (BILL_SKIP_RE.test(name)) return;
+    const key = name.toLowerCase() + '|' + qty + '|' + mrp;
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push({ name: name.slice(0, 80), qty, price: mrp, amount: 0, via: 'pricelist' });
+  });
+
+  if (items.length < 2) return [];
+  if (items.length < Math.ceil(rowCount * 0.4)) return [];     // too many lines were dropped → not a table
+  return items;
+}
+
 function parseBillRows(rows) {
   const items = [];
   const allRows = (rows || []).map(r => (r || []).filter(w => w && w.s).map(w => ({ x: w.x, s: String(w.s), est: w.est ? 1 : 0 })));
@@ -1318,6 +1458,13 @@ function parseBillRows(rows) {
     }
     items.push(it);
     if (items.length >= 40) break;
+  }
+  // no header row → the table might be a plain stock / price list; trust the number
+  // positions when they find at least as many products as the guessing readers did
+  if (!cols) {
+    const pl = parsePriceListRows(allRows);
+    if (pl.length >= 2 && pl.length >= items.length) return pl;
+    if (!items.length) return pl;
   }
   return items;
 }
